@@ -50,6 +50,11 @@ No blocking issues found.
 **Fix:** Add `test_empty_input` covering the `""` case.
 """
 
+SAMOREV_REPORT_BODY = REV_REPORT_BODY.replace(
+    "## REV Code Review Report",
+    "## samorev Code Review Report",
+)
+
 HUMAN_NOTE_1 = "LGTM, nice refactor. Merging after CI."
 HUMAN_NOTE_2 = "Can you add a test for the edge case where `user_id` is None?"
 SHORT_NOTE = ":+1:"  # Only 3 chars — should be skipped
@@ -83,6 +88,13 @@ class TestExtractPriorReviews:
         assert "src/auth.py:42" in result
         assert "[HIGH]" in result
         assert "src/utils.py:101" in result
+
+    def test_samorev_report_extracted(self):
+        notes = [_make_note(SAMOREV_REPORT_BODY)]
+        result = extract_prior_reviews(notes)
+        assert "Previous REV Review" in result
+        assert "[CRITICAL]" in result
+        assert "src/auth.py:42" in result
 
     def test_fix_suggestion_included(self):
         notes = [_make_note(REV_REPORT_BODY)]
