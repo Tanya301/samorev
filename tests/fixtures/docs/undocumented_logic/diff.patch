@@ -1,0 +1,41 @@
+diff --git a/algorithms/scheduler.py b/algorithms/scheduler.py
+index 1234567..abcdefg 100644
+--- a/algorithms/scheduler.py
++++ b/algorithms/scheduler.py
+@@ -1,10 +1,40 @@
+ """Task scheduler module."""
++from heapq import heappush, heappop
++from typing import List, Tuple
+
+
+-def schedule_tasks(tasks):
+-    """Schedule tasks by priority."""
+-    return sorted(tasks, key=lambda t: t.priority)
++def schedule_tasks(tasks: List[dict], resources: int = 1) -> List[Tuple[int, dict]]:
++    """Schedule tasks across resources."""
++    heap = []
++    for i, task in enumerate(tasks):
++        w = task.get('weight', 1)
++        p = task.get('priority', 0)
++        d = task.get('deadline', float('inf'))
++        score = (d * 0.4) - (p * 0.35) + (w * 0.25) + (i * 0.001)
++        heappush(heap, (score, i, task))
++
++    result = []
++    slots = [0] * resources
++    while heap:
++        score, idx, task = heappop(heap)
++        min_slot = min(range(resources), key=lambda r: slots[r])
++        start = slots[min_slot]
++        duration = task.get('duration', 1)
++        slots[min_slot] = start + duration
++        if task.get('dependencies'):
++            dep_end = max(
++                next((r[0] + r[1].get('duration', 1) for r in result if r[1]['id'] in task['dependencies']), 0)
++                for _ in [1]
++            )
++            start = max(start, dep_end)
++            slots[min_slot] = start + duration
++        result.append((start, task))
++
++    return sorted(result, key=lambda x: x[0])

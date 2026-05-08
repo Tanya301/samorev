@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "INFO",
+      "file": "utils/helpers.py",
+      "line_range": [4, 25],
+      "issue_contains": ["naming", "convention", "style"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 3
+}

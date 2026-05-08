@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "INFO",
+      "file": "services/calculator.py",
+      "line_range": [4, 30],
+      "issue_contains": ["type", "annotation", "hint"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 3
+}

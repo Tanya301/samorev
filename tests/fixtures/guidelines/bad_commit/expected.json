@@ -1,0 +1,10 @@
+{
+  "must_find": [
+    {
+      "severity_min": "INFO",
+      "issue_contains": ["commit", "message", "title", "description"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 2
+}

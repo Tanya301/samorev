@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "MEDIUM",
+      "file": "utils/file_processor.py",
+      "line_range": [6, 9],
+      "issue_contains": ["resource", "leak", "file", "close"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 1
+}

@@ -1,0 +1,22 @@
+diff --git a/utils/backup.py b/utils/backup.py
+index 1234567..abcdefg 100644
+--- a/utils/backup.py
++++ b/utils/backup.py
+@@ -5,10 +5,15 @@ import subprocess
+
+
+ def create_backup(database_name, output_path):
+-    """Create a database backup."""
+-    cmd = ["pg_dump", "-d", database_name, "-f", output_path]
+-    subprocess.run(cmd, check=True)
++    """Create a database backup using shell."""
++    cmd = f"pg_dump -d {database_name} -f {output_path}"
++    subprocess.run(cmd, shell=True, check=True)
++
++
++def run_maintenance(table_name):
++    """Run VACUUM on a table."""
++    os.system(f"psql -c 'VACUUM {table_name}'")
+
+
+ def list_backups(directory):

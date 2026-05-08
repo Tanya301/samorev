@@ -1,0 +1,32 @@
+diff --git a/services/pricing.py b/services/pricing.py
+index 1234567..abcdefg 100644
+--- a/services/pricing.py
++++ b/services/pricing.py
+@@ -3,15 +3,20 @@ from decimal import Decimal
+
+
+ def calculate_price(base_price: Decimal, quantity: int) -> Decimal:
+-    """Calculate total price.
+-
+-    Applies a 10% discount for orders over 100 items.
++    """Calculate total price with tiered discounts.
++
++    Discount tiers:
++    - 10+ items: 5% discount
++    - 50+ items: 10% discount
++    - 100+ items: 15% discount
+     """
+     total = base_price * quantity
+
+-    # Apply 10% discount for bulk orders
+-    if quantity > 100:
+-        total = total * Decimal('0.90')
++    # Apply 10% discount for bulk orders (legacy comment - now tiered)
++    if quantity >= 100:
++        total = total * Decimal('0.85')  # 15% discount
++    elif quantity >= 50:
++        total = total * Decimal('0.90')  # 10% discount
++    elif quantity >= 10:
++        total = total * Decimal('0.95')  # 5% discount
+
+     return total

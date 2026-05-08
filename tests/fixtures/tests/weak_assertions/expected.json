@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "MEDIUM",
+      "file": "tests/test_calculator.py",
+      "line_range": [5, 25],
+      "issue_contains": ["assert", "weak", "test"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 2
+}

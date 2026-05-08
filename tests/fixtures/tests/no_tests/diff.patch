@@ -1,0 +1,53 @@
+diff --git a/services/payment.py b/services/payment.py
+new file mode 100644
+index 0000000..abcdefg
+--- /dev/null
++++ b/services/payment.py
+@@ -0,0 +1,45 @@
++"""Payment processing service."""
++from decimal import Decimal
++from typing import Optional
++
++
++class PaymentProcessor:
++    """Handles payment transactions."""
++
++    def __init__(self, api_key: str):
++        self.api_key = api_key
++        self.transactions = []
++
++    def process_payment(
++        self,
++        amount: Decimal,
++        currency: str,
++        card_token: str,
++    ) -> dict:
++        """Process a payment transaction."""
++        if amount <= 0:
++            raise ValueError("Amount must be positive")
++
++        if currency not in ["USD", "EUR", "GBP"]:
++            raise ValueError(f"Unsupported currency: {currency}")
++
++        transaction = {
++            "id": self._generate_id(),
++            "amount": amount,
++            "currency": currency,
++            "status": "pending",
++        }
++        self.transactions.append(transaction)
++        return transaction
++
++    def refund(self, transaction_id: str, amount: Optional[Decimal] = None) -> dict:
++        """Refund a transaction."""
++        tx = self._find_transaction(transaction_id)
++        if tx is None:
++            raise ValueError("Transaction not found")
++        refund_amount = amount or tx["amount"]
++        return {"refund_id": self._generate_id(), "amount": refund_amount}
++
++    def _generate_id(self) -> str:
++        return f"tx_{len(self.transactions)}"
++
++    def _find_transaction(self, tx_id: str):
++        return next((t for t in self.transactions if t["id"] == tx_id), None)

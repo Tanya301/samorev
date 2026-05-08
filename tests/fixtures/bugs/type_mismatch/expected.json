@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "HIGH",
+      "file": "api/handlers.py",
+      "line_range": [9, 12],
+      "issue_contains": ["type", "string", "int"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 1
+}

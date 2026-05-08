@@ -1,0 +1,40 @@
+diff --git a/services/user_manager.py b/services/user_manager.py
+index 1234567..abcdefg 100644
+--- a/services/user_manager.py
++++ b/services/user_manager.py
+@@ -5,10 +5,25 @@ class UserManager:
+     def __init__(self, db):
+         self.db = db
+
+-    def create_user(self, username: str, email: str):
++    def create_user(self, username: str, email: str) -> dict:
+         """Create a new user."""
++        if not username or len(username) < 3:
++            raise ValueError("Username must be at least 3 characters")
++        if not email or "@" not in email:
++            raise ValueError("Invalid email format")
++        if self.db.user_exists(username):
++            raise ValueError("Username already taken")
+         return self.db.insert_user(username, email)
++
++    def delete_user(self, user_id: int) -> bool:
++        """Delete a user by ID."""
++        if user_id <= 0:
++            raise ValueError("Invalid user ID")
++        user = self.db.get_user(user_id)
++        if user is None:
++            raise LookupError("User not found")
++        return self.db.delete_user(user_id)
+diff --git a/tests/test_user_manager.py b/tests/test_user_manager.py
+index 1234567..abcdefg 100644
+--- a/tests/test_user_manager.py
++++ b/tests/test_user_manager.py
+@@ -8,3 +8,8 @@ class TestUserManager:
+
+     def test_create_user_success(self, mock_db):
+         assert self.manager.create_user("john", "john@example.com")
++
++    def test_delete_user_success(self, mock_db):
++        mock_db.get_user.return_value = {"id": 1, "name": "john"}
++        mock_db.delete_user.return_value = True
++        assert self.manager.delete_user(1) is True

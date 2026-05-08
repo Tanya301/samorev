@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "LOW",
+      "file": "services/pricing.py",
+      "line_range": [15, 18],
+      "issue_contains": ["comment", "outdated", "misleading"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 1
+}

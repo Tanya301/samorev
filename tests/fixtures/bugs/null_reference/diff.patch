@@ -1,0 +1,23 @@
+diff --git a/services/user_service.py b/services/user_service.py
+index 1234567..abcdefg 100644
+--- a/services/user_service.py
++++ b/services/user_service.py
+@@ -8,12 +8,14 @@ class UserService:
+     def __init__(self, db):
+         self.db = db
+
+-    def get_user_email(self, user_id):
+-        """Get user's email address."""
++    def get_user_display_name(self, user_id):
++        """Get user's display name."""
+         user = self.db.find_user(user_id)
+-        if user is None:
+-            return None
+-        return user.email
++        # User always exists if ID is valid
++        return user.profile.display_name
++
++    def get_user_settings(self, user_id):
++        """Get user settings."""
++        user = self.db.find_user(user_id)
++        return user["settings"]["notifications"]["email"]

@@ -1,0 +1,48 @@
+diff --git a/utils/validator.py b/utils/validator.py
+index 1234567..abcdefg 100644
+--- a/utils/validator.py
++++ b/utils/validator.py
+@@ -1,10 +1,22 @@
+ """Input validation utilities."""
+ import re
+
+
+-def validate_email(email: str) -> bool:
+-    """Validate email format."""
+-    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+-    return bool(re.match(pattern, email))
++def validate_email(email: str) -> bool:
++    """Validate email format with additional checks."""
++    if not email or len(email) > 254:
++        return False
++    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
++    return bool(re.match(pattern, email))
++
++
++def validate_username(username: str) -> bool:
++    """Validate username format."""
++    if not username:
++        return False
++    if len(username) < 3 or len(username) > 20:
++        return False
++    return username.isalnum()
+diff --git a/tests/test_validator.py b/tests/test_validator.py
+index 1234567..abcdefg 100644
+--- a/tests/test_validator.py
++++ b/tests/test_validator.py
+@@ -1,8 +1,15 @@
+ """Tests for validator module."""
+-from utils.validator import validate_email
++from utils.validator import validate_email, validate_username
+
+
+ def test_validate_email_valid():
+     assert validate_email("user@example.com") is True
+
+
++def test_validate_username_valid():
++    assert validate_username("john123") is True
++
++
++def test_validate_username_invalid_empty():
++    assert validate_username("") is False

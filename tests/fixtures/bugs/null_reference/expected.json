@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "HIGH",
+      "file": "services/user_service.py",
+      "line_range": [14, 16],
+      "issue_contains": ["null", "none", "undefined", "attribute"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 1
+}

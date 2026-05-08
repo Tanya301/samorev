@@ -1,0 +1,28 @@
+diff --git a/db/queries.sql b/db/queries.sql
+index 1234567..abcdefg 100644
+--- a/db/queries.sql
++++ b/db/queries.sql
+@@ -1,10 +1,25 @@
+ -- User queries
+
+-SELECT id, name, email
+-FROM users
+-WHERE status = 'active'
+-ORDER BY created_at DESC;
++select * from users where status='active' order by created_at;
++
++-- Get user with orders
++SELECT u.id,u.name,o.id as order_id,o.total FROM users u,orders o WHERE u.id=o.user_id AND u.status='active';
++
++-- Insert user
++insert into users(name,email,status) values('John','john@example.com','active');
++
++-- Complex query
++SELECT u.id, u.name, COUNT(o.id) as order_count,
++SUM(o.total) as total_spent
++FROM users u
++LEFT JOIN orders o ON u.id = o.user_id
++WHERE u.created_at > '2024-01-01'
++GROUP BY u.id, u.name HAVING COUNT(o.id) > 0
++ORDER BY total_spent DESC
++LIMIT 10;

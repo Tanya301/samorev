@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "MEDIUM",
+      "file": "algorithms/scheduler.py",
+      "line_range": [8, 35],
+      "issue_contains": ["comment", "document", "logic", "complex"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 2
+}

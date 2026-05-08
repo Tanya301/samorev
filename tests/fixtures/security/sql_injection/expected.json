@@ -1,0 +1,18 @@
+{
+  "must_find": [
+    {
+      "severity_min": "HIGH",
+      "file": "api/users.py",
+      "line_range": [20, 22],
+      "issue_contains": ["sql", "injection"]
+    },
+    {
+      "severity_min": "HIGH",
+      "file": "api/users.py",
+      "line_range": [27, 29],
+      "issue_contains": ["sql", "injection"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 0
+}

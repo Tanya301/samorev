@@ -1,0 +1,18 @@
+{
+  "must_find": [
+    {
+      "severity_min": "CRITICAL",
+      "file": "utils/backup.py",
+      "line_range": [10, 11],
+      "issue_contains": ["command", "injection", "shell"]
+    },
+    {
+      "severity_min": "CRITICAL",
+      "file": "utils/backup.py",
+      "line_range": [15, 16],
+      "issue_contains": ["command", "injection", "os.system"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 0
+}

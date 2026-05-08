@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(glab:*)",
+      "Bash(git:*)",
+      "Bash(ls:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(node:*)",
+      "Bash(npm:*)",
+      "Bash(pnpm:*)",
+      "Bash(bun:*)",
+      "Bash(go:*)",
+      "Bash(docker:*)",
+      "Bash(docker-compose:*)",
+      "Bash(sqitch:*)",
+      "Bash(psql:*)",
+      "Read(*)",
+      "Edit(*)",
+      "Write(*)",
+      "WebFetch(domain:*)"
+    ],
+    "deny": [
+      "Bash(rm:*)",
+      "Bash(sudo:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Read(.env*)",
+      "Read(secrets/**)",
+      "Edit(.env*)",
+      "Edit(secrets/**)",
+      "Write(.env*)",
+      "Write(secrets/**)"
+    ]
+  }
+}

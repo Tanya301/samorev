@@ -1,0 +1,28 @@
+diff --git a/api/endpoints.py b/api/endpoints.py
+index 1234567..abcdefg 100644
+--- a/api/endpoints.py
++++ b/api/endpoints.py
+@@ -10,6 +10,12 @@ def get_users():
+     return db.get_all_users()
+
+
++def delete_user(user_id):
++    """Delete user."""
++    # TODO: add validation
++    return db.delete_user(user_id)
++
++
+ def get_user(user_id):
+     """Get a specific user."""
+     return db.get_user(user_id)
+diff --git a/metadata.json b/metadata.json
+new file mode 100644
+index 0000000..abcdefg
+--- /dev/null
++++ b/metadata.json
+@@ -0,0 +1,5 @@
++{
++  "mr_title": "fix",
++  "mr_description": "",
++  "commit_message": "wip"
++}

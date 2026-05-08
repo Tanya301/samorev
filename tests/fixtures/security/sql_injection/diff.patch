@@ -1,0 +1,24 @@
+diff --git a/api/users.py b/api/users.py
+index 1234567..abcdefg 100644
+--- a/api/users.py
++++ b/api/users.py
+@@ -15,6 +15,15 @@ from db import get_connection
+ def get_user_by_id(user_id):
+     """Fetch a user by their ID."""
+     conn = get_connection()
+-    cursor = conn.cursor()
+-    cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+-    return cursor.fetchone()
++    # Quick fix for performance
++    query = f"SELECT * FROM users WHERE id = {user_id}"
++    cursor = conn.cursor()
++    cursor.execute(query)
++    return cursor.fetchone()
++
++
++def search_users(name_filter):
++    """Search users by name."""
++    conn = get_connection()
++    cursor = conn.cursor()
++    cursor.execute(f"SELECT * FROM users WHERE name LIKE '%{name_filter}%'")
++    return cursor.fetchall()

@@ -1,0 +1,51 @@
+diff --git a/services/order_processor.py b/services/order_processor.py
+index 1234567..abcdefg 100644
+--- a/services/order_processor.py
++++ b/services/order_processor.py
+@@ -8,12 +8,35 @@ class OrderProcessor:
+     def process_order(self, order: dict) -> str:
+         """Process an order and return status."""
+         order_type = order.get("type")
+-        if order_type == "standard":
++
++        if order_type == "express":
++            return self._process_express(order)
++        elif order_type == "standard":
+             return self._process_standard(order)
+-        return "unknown"
++        elif order_type == "bulk":
++            return self._process_bulk(order)
++        elif order_type == "subscription":
++            return self._process_subscription(order)
++        else:
++            return "unknown"
+
+     def _process_standard(self, order):
+         return "processed"
++
++    def _process_express(self, order):
++        if order.get("priority"):
++            return "express_priority"
++        return "express_normal"
++
++    def _process_bulk(self, order):
++        if order.get("quantity", 0) > 100:
++            return "bulk_large"
++        return "bulk_small"
++
++    def _process_subscription(self, order):
++        if order.get("recurring"):
++            return "subscription_active"
++        return "subscription_paused"
+diff --git a/tests/test_order_processor.py b/tests/test_order_processor.py
+index 1234567..abcdefg 100644
+--- a/tests/test_order_processor.py
++++ b/tests/test_order_processor.py
+@@ -5,3 +5,6 @@ from services.order_processor import OrderProcessor
+ def test_process_standard_order():
+     processor = OrderProcessor()
+     assert processor.process_order({"type": "standard"}) == "processed"
++
++def test_process_express_order():
++    processor = OrderProcessor()
++    assert processor.process_order({"type": "express"}) == "express_normal"

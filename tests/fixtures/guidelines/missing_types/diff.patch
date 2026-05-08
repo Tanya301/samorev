@@ -1,0 +1,36 @@
+diff --git a/services/calculator.py b/services/calculator.py
+index 1234567..abcdefg 100644
+--- a/services/calculator.py
++++ b/services/calculator.py
+@@ -1,10 +1,30 @@
+ """Calculator service."""
+-from typing import List
+
+
+-def calculate_sum(numbers: List[int]) -> int:
+-    """Calculate sum of numbers."""
+-    return sum(numbers)
++def calculate_sum(numbers):
++    """Calculate sum."""
++    return sum(numbers)
++
++
++def calculate_average(numbers):
++    total = sum(numbers)
++    count = len(numbers)
++    return total / count
++
++
++def process_data(data):
++    results = []
++    for item in data:
++        processed = transform(item)
++        results.append(processed)
++    return results
++
++
++def transform(item):
++    return {
++        'value': item.get('value'),
++        'processed': True
++    }

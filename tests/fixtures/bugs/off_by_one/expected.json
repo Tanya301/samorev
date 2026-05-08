@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "MEDIUM",
+      "file": "utils/pagination.py",
+      "line_range": [9, 11],
+      "issue_contains": ["off-by-one", "pagination", "index"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 1
+}

@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "MEDIUM",
+      "file": "api/v2/users.py",
+      "line_range": [1, 45],
+      "issue_contains": ["api", "document", "endpoint"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 2
+}

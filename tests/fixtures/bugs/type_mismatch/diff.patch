@@ -1,0 +1,29 @@
+diff --git a/api/handlers.py b/api/handlers.py
+index 1234567..abcdefg 100644
+--- a/api/handlers.py
++++ b/api/handlers.py
+@@ -5,12 +5,16 @@ from typing import List, Dict
+
+
+ def calculate_average(values: List[int]) -> float:
+-    """Calculate average of integer values."""
+-    if not values:
+-        return 0.0
+-    return sum(values) / len(values)
++    """Calculate average of values."""
++    total = "0"
++    for v in values:
++        total += v  # Accumulate values
++    return total / len(values)
+
+
+-def merge_configs(base: Dict, override: Dict) -> Dict:
+-    """Merge two config dictionaries."""
+-    result = base.copy()
+-    result.update(override)
+-    return result
++def format_price(amount: int) -> str:
++    """Format price as currency string."""
++    # Amount is in cents
++    dollars = amount / 100
++    return "$" + dollars  # Concatenate to make string

@@ -1,0 +1,200 @@
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - project: 'postgres-ai/infra'
+    file: '/ci/templates/approval-check.yml'
+
+# REV Testing Pipeline
+#
+# This pipeline validates REV review agents and ensures quality thresholds are met.
+#
+# Stages:
+#   - lint: Check markdown formatting
+#   - test: Run unit tests (no API) and integration tests (with API)
+#   - quality-gate: Verify quality metrics meet thresholds
+
+stages:
+  - lint
+  - test
+  - quality-gate
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+cache:
+  paths:
+    - .cache/pip
+
+# =============================================================================
+# LINT STAGE
+# =============================================================================
+
+lint:markdown:
+  stage: lint
+  image: node:20-alpine
+  before_script:
+    - npm install -g markdownlint-cli
+  script:
+    # Only lint files changed in this MR, skip pre-existing issues in agents/
+    - markdownlint '.claude/commands/*.md' --ignore node_modules || true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  allow_failure: true  # Don't block on markdown style
+
+lint:python:
+  stage: lint
+  image: python:3.11-slim
+  before_script:
+    - pip install ruff
+  script:
+    - ruff check tests/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - tests/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# =============================================================================
+# TEST STAGE
+# =============================================================================
+
+# Unit tests run on every push - no API calls
+unit-tests:
+  stage: test
+  image: python:3.11-slim
+  before_script:
+    - pip install pytest
+  script:
+    - pytest tests/ -m "not api" -v --tb=short
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Integration tests only run when agents change
+# These make real API calls and cost money
+integration-tests:
+  stage: test
+  image: python:3.11-slim
+  before_script:
+    - apt-get update && apt-get install -y jq curl
+    - pip install pytest
+    - mkdir -p tests/results
+    - |
+      # Install Node.js (required for claude CLI)
+      curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+      apt-get install -y nodejs
+      # Install claude CLI
+      npm install -g @anthropic-ai/claude-code
+      # Debug: check if API key is set (length only, not value)
+      echo "ANTHROPIC_API_KEY length: ${#ANTHROPIC_API_KEY}"
+      if [ -z "$ANTHROPIC_API_KEY" ]; then
+        echo "ERROR: ANTHROPIC_API_KEY is empty or not set"
+        exit 1
+      fi
+  script:
+    - pytest tests/ -m "api" -v --tb=short --max-fixtures=5 --model opus --junit-xml=tests/results/junit.xml
+  artifacts:
+    paths:
+      - tests/results/
+    reports:
+      junit: tests/results/junit.xml
+    expire_in: 7 days
+    when: always  # Save artifacts even on failure for debugging
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - agents/**/*
+        - .claude/commands/review-mr.md
+        - tests/fixtures/**/*
+  allow_failure: true  # Don't block MR if API tests fail (cost/availability)
+
+# Nightly full test suite
+nightly-tests:
+  stage: test
+  image: python:3.11-slim
+  before_script:
+    - apt-get update && apt-get install -y jq curl
+    - pip install pytest
+    - |
+      # Install Node.js and claude CLI
+      curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+      apt-get install -y nodejs
+      npm install -g @anthropic-ai/claude-code
+  script:
+    - pytest tests/ -m "api" -v --tb=short --model opus --save-golden
+  artifacts:
+    paths:
+      - tests/golden/
+    expire_in: 30 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+
+# =============================================================================
+# QUALITY GATE STAGE
+# =============================================================================
+
+quality-gate:
+  stage: quality-gate
+  image: python:3.11-slim
+  script:
+    - |
+      # Check if integration tests ran and produced results
+      if [ -d "tests/results" ]; then
+        python tests/lib/metrics.py \
+          --results-dir tests/results/ \
+          --baseline tests/golden/ \
+          --fail-on-regression \
+          --fail-on-threshold
+      else
+        echo "No integration test results - skipping quality gate"
+      fi
+  needs:
+    - job: integration-tests
+      optional: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - agents/**/*
+        - .claude/commands/review-mr.md
+
+# =============================================================================
+# MODEL COMPARISON (Manual trigger)
+# =============================================================================
+
+# Compare Sonnet vs Opus performance
+# Triggered manually before switching a model
+compare-models:
+  stage: test
+  image: python:3.11-slim
+  before_script:
+    - apt-get update && apt-get install -y jq curl
+    - pip install pytest
+    - |
+      # Install Node.js and claude CLI
+      curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+      apt-get install -y nodejs
+      npm install -g @anthropic-ai/claude-code
+  script:
+    - |
+      echo "Running Opus baseline..."
+      pytest tests/ -m "api" --model opus --max-fixtures=5 -v 2>&1 | tee opus_results.txt
+
+      echo "Running Sonnet comparison..."
+      pytest tests/ -m "api" --model sonnet --max-fixtures=5 -v 2>&1 | tee sonnet_results.txt
+
+      echo "=== COMPARISON SUMMARY ==="
+      echo "Review the outputs above to compare recall and FP rates"
+  artifacts:
+    paths:
+      - opus_results.txt
+      - sonnet_results.txt
+    expire_in: 7 days
+  rules:
+    - when: manual
+  allow_failure: true  # Don't block pipeline; this is an optional comparison
+
+# Override semgrep-sast rules to bypass language auto-detection (DCF-712)
+semgrep-sast:
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "HIGH",
+      "file": "services/counter.py",
+      "line_range": [10, 14],
+      "issue_contains": ["race", "thread", "concurrent"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 0
+}

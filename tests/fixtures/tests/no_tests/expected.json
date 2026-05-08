@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "MEDIUM",
+      "file": "services/payment.py",
+      "line_range": [1, 45],
+      "issue_contains": ["test", "coverage"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 2
+}

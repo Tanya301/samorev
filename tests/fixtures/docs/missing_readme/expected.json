@@ -1,0 +1,11 @@
+{
+  "must_find": [
+    {
+      "severity_min": "INFO",
+      "file": "plugins/analytics",
+      "issue_contains": ["readme", "documentation", "module"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 2
+}

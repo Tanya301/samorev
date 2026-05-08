@@ -1,0 +1,18 @@
+{
+  "must_find": [
+    {
+      "severity_min": "CRITICAL",
+      "file": "config/settings.py",
+      "line_range": [5, 7],
+      "issue_contains": ["secret", "credential", "hardcoded"]
+    },
+    {
+      "severity_min": "CRITICAL",
+      "file": "config/settings.py",
+      "line_range": [8, 9],
+      "issue_contains": ["aws", "key", "credential"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 1
+}

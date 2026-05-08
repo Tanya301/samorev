@@ -1,0 +1,42 @@
+diff --git a/api/authentication.py b/api/authentication.py
+index 1234567..abcdefg 100644
+--- a/api/authentication.py
++++ b/api/authentication.py
+@@ -1,10 +1,35 @@
+ """Authentication module."""
+ import hashlib
++import secrets
++from datetime import datetime, timedelta
+
+
+-def hash_password(password: str) -> str:
+-    """Hash a password using SHA256."""
+-    return hashlib.sha256(password.encode()).hexdigest()
++def hash_password(password: str, salt: str = None) -> tuple[str, str]:
++    if salt is None:
++        salt = secrets.token_hex(16)
++    hashed = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000)
++    return hashed.hex(), salt
++
++
++def verify_password(password: str, hashed: str, salt: str) -> bool:
++    computed, _ = hash_password(password, salt)
++    return secrets.compare_digest(computed, hashed)
++
++
++def generate_token(user_id: int, expires_in: int = 3600) -> dict:
++    token = secrets.token_urlsafe(32)
++    expiry = datetime.utcnow() + timedelta(seconds=expires_in)
++    return {'token': token, 'user_id': user_id, 'expires_at': expiry.isoformat()}
++
++
++def validate_token(token_data: dict) -> bool:
++    if not token_data:
++        return False
++    expiry = datetime.fromisoformat(token_data['expires_at'])
++    return datetime.utcnow() < expiry
++
++
++def refresh_token(token_data: dict, extend_by: int = 3600) -> dict:
++    token_data['expires_at'] = (datetime.utcnow() + timedelta(seconds=extend_by)).isoformat()
++    return token_data

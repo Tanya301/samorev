@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "INFO",
+      "file": "app.py",
+      "line_range": [1, 55],
+      "issue_contains": ["organization", "module", "file", "separate"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 3
+}

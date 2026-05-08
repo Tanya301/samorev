@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "MEDIUM",
+      "file": "services/order_processor.py",
+      "line_range": [15, 40],
+      "issue_contains": ["test", "coverage", "path"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 2
+}

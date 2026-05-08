@@ -1,0 +1,51 @@
+diff --git a/api/v2/users.py b/api/v2/users.py
+new file mode 100644
+index 0000000..abcdefg
+--- /dev/null
++++ b/api/v2/users.py
+@@ -0,0 +1,45 @@
++"""Users API v2 endpoints."""
++from flask import Blueprint, request, jsonify
++
++bp = Blueprint('users_v2', __name__, url_prefix='/api/v2/users')
++
++
++@bp.route('/', methods=['GET'])
++def list_users():
++    page = request.args.get('page', 1, type=int)
++    limit = request.args.get('limit', 20, type=int)
++    sort = request.args.get('sort', 'created_at')
++    order = request.args.get('order', 'desc')
++    status = request.args.get('status')
++    role = request.args.get('role')
++    # Implementation
++    return jsonify({'users': [], 'total': 0, 'page': page})
++
++
++@bp.route('/<int:user_id>', methods=['GET'])
++def get_user(user_id):
++    include = request.args.get('include', '').split(',')
++    # Implementation
++    return jsonify({'user': None})
++
++
++@bp.route('/', methods=['POST'])
++def create_user():
++    data = request.json
++    # Required: email, password
++    # Optional: name, role, metadata
++    return jsonify({'user': None}), 201
++
++
++@bp.route('/<int:user_id>', methods=['PATCH'])
++def update_user(user_id):
++    data = request.json
++    # Allowed fields: name, email, role, status, metadata
++    return jsonify({'user': None})
++
++
++@bp.route('/<int:user_id>', methods=['DELETE'])
++def delete_user(user_id):
++    hard_delete = request.args.get('hard', 'false') == 'true'
++    # Implementation
++    return '', 204

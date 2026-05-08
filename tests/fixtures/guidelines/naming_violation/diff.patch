@@ -1,0 +1,32 @@
+diff --git a/utils/helpers.py b/utils/helpers.py
+index 1234567..abcdefg 100644
+--- a/utils/helpers.py
++++ b/utils/helpers.py
+@@ -1,10 +1,25 @@
+ """Helper utilities."""
+
+
+-def calculate_total(items):
+-    """Calculate total price of items."""
+-    return sum(item.price for item in items)
++def calcTot(items):
++    """Calculate total."""
++    return sum(item.price for item in items)
++
++
++def GetUserName(User):
++    """Get user name."""
++    return User.name
++
++
++class userManager:
++    """Manages users."""
++
++    def __init__(self):
++        self.Users = []
++
++    def AddUser(self, u):
++        self.Users.append(u)
++
++    def getUser(self, ID):
++        return next((u for u in self.Users if u.id == ID), None)

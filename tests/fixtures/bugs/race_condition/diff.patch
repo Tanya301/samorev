@@ -1,0 +1,29 @@
+diff --git a/services/counter.py b/services/counter.py
+index 1234567..abcdefg 100644
+--- a/services/counter.py
++++ b/services/counter.py
+@@ -1,15 +1,18 @@
+ """Counter service for tracking metrics."""
+-import threading
++from threading import Thread
+
+
+ class Counter:
+     def __init__(self):
+         self.value = 0
+-        self._lock = threading.Lock()
+
+     def increment(self):
+-        with self._lock:
+-            self.value += 1
++        # Read current value
++        current = self.value
++        # Increment
++        self.value = current + 1
+
+-    def get(self):
+-        with self._lock:
+-            return self.value
++    def increment_by(self, amount):
++        for _ in range(amount):
++            self.increment()

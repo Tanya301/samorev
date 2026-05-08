@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "MEDIUM",
+      "file": "utils/validator.py",
+      "line_range": [15, 22],
+      "issue_contains": ["test", "edge", "username"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 2
+}

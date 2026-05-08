@@ -1,0 +1,2 @@
+# Test dependencies for REV
+pytest>=7.0.0

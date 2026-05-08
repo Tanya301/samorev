@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "CRITICAL",
+      "file": "auth/middleware.py",
+      "line_range": [15, 17],
+      "issue_contains": ["auth", "bypass", "admin"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 1
+}

@@ -1,0 +1,31 @@
+diff --git a/utils/file_processor.py b/utils/file_processor.py
+index 1234567..abcdefg 100644
+--- a/utils/file_processor.py
++++ b/utils/file_processor.py
+@@ -3,14 +3,17 @@ import json
+
+
+ def read_config(path):
+-    """Read configuration from JSON file."""
+-    with open(path, 'r') as f:
+-        return json.load(f)
++    """Read configuration from file."""
++    f = open(path, 'r')
++    data = json.load(f)
++    return data
+
+
+-def process_files(file_list):
+-    """Process multiple files."""
+-    results = []
+-    for path in file_list:
+-        with open(path, 'rb') as f:
+-            results.append(f.read())
+-    return results
++def copy_file(src, dst):
++    """Copy file contents."""
++    src_file = open(src, 'rb')
++    dst_file = open(dst, 'wb')
++    dst_file.write(src_file.read())
++    # Files will be closed when function exits
++    return True

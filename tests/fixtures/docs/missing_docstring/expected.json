@@ -1,0 +1,12 @@
+{
+  "must_find": [
+    {
+      "severity_min": "LOW",
+      "file": "api/authentication.py",
+      "line_range": [5, 35],
+      "issue_contains": ["docstring", "documentation"]
+    }
+  ],
+  "must_not_find": [],
+  "allowed_false_positives": 2
+}
