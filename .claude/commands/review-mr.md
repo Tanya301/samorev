@@ -1,26 +1,27 @@
 ---
-description: Review a GitHub PR or GitLab MR using parallel AI agents
-argument-hint: <PR/MR-URL or number>
+description: Review a GitLab MR using parallel AI agents
+argument-hint: <MR-URL or number>
 allowed-tools: Bash, Read, Grep, Glob, Task, WebFetch
 ---
 
-# Review GitHub PR or GitLab MR
+# Review GitLab MR
 
-Review a GitHub Pull Request or GitLab Merge Request using parallel AI agents for comprehensive code analysis.
+Review a GitLab Merge Request using parallel AI agents for comprehensive code analysis.
+
+GitHub PR support is planned, but this command does not yet fetch, analyze, or post GitHub PR reviews end to end.
 
 ## Usage
 
 ```
-/review-mr <PR/MR-URL or number> [--no-comment] [--blocking]
+/review-mr <MR-URL or number> [--no-comment] [--blocking]
 ```
 
 **Examples:**
-- `/review-mr https://github.com/example-org/example-repo/pull/123`
 - `/review-mr https://gitlab.com/example-org/example-repo/-/merge_requests/123`
 - `/review-mr 123` (uses current repo context)
 - `/review-mr 123 --no-comment` (only output to terminal, don't post to MR)
 
-**Default behavior:** Reviews are automatically posted as a comment when the provider CLI (`gh` or `glab`) is authenticated.
+**Default behavior:** Reviews are automatically posted as a comment with `glab` when authenticated.
 
 ## Instructions
 
@@ -35,14 +36,12 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 if [[ "$(git remote get-url origin 2>/dev/null)" == *"samorev"* ]]; then
   # Running from samorev repo itself
   git pull --quiet origin main 2>/dev/null
-  git submodule update --init --recursive --quiet 2>/dev/null
 elif [[ -d "$REPO_ROOT/rev/.git" ]] || [[ -f "$REPO_ROOT/rev/.git" ]]; then
   # samorev is a subdirectory (clone or submodule)
   cd "$REPO_ROOT/rev"
   if [[ "$(git remote get-url origin 2>/dev/null)" == *"samorev"* ]]; then
     [[ -f .git ]] && cd "$REPO_ROOT" && git submodule update --remote --quiet rev 2>/dev/null && cd "$REPO_ROOT/rev"
     [[ -d .git ]] && git pull --quiet origin main 2>/dev/null
-    git submodule update --init --recursive --quiet 2>/dev/null
   fi
   cd "$REPO_ROOT"
 fi
@@ -719,7 +718,7 @@ For each agent, include in the prompt:
 
 **Agent 1: Security Reviewer** (model: opus)
 ```
-You are a security expert. Review this GitHub PR or GitLab MR diff for security issues.
+You are a security expert. Review this GitLab MR diff for security issues.
 
 <diff>
 {DIFF_CONTENT}
@@ -766,7 +765,7 @@ If no security issues found, output: NO_FINDINGS
 
 **Agent 2: Bug Hunter** (model: opus)
 ```
-You are a bug detection expert. Review this GitHub PR or GitLab MR diff for bugs and logic errors.
+You are a bug detection expert. Review this GitLab MR diff for bugs and logic errors.
 
 <diff>
 {DIFF_CONTENT}
@@ -814,7 +813,7 @@ If no bugs found, output: NO_FINDINGS
 
 **Agent 3: Test Analyzer** (model: sonnet)
 ```
-You are a test quality expert. Review this GitHub PR or GitLab MR diff for test coverage and quality.
+You are a test quality expert. Review this GitLab MR diff for test coverage and quality.
 
 <diff>
 {DIFF_CONTENT}
@@ -857,7 +856,7 @@ If no test issues found, output: NO_FINDINGS
 
 **Agent 4: Guidelines Checker** (model: sonnet)
 ```
-You are a code style and guidelines expert. Review this GitHub PR or GitLab MR diff for convention violations.
+You are a code style and guidelines expert. Review this GitLab MR diff for convention violations.
 
 <diff>
 {DIFF_CONTENT}
@@ -908,7 +907,7 @@ If no guideline issues found, output: NO_FINDINGS
 
 **Agent 5: Docs Reviewer** (model: sonnet)
 ```
-You are a documentation expert. Review this GitHub PR or GitLab MR diff for documentation quality.
+You are a documentation expert. Review this GitLab MR diff for documentation quality.
 
 <diff>
 {DIFF_CONTENT}

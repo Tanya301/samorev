@@ -1,12 +1,12 @@
 # samorev - automated code review
 
-samorev is a Claude Code plugin that automates code review for GitHub Pull Requests and GitLab Merge Requests using parallel AI agents.
+samorev is a Claude Code plugin that currently supports GitLab Merge Requests via `glab` using parallel AI agents. GitHub Pull Request support is planned and tracked separately.
 
 ## Features
 
 - **Automatic self-update**: Checks for updates before each review (supports standalone repos and submodule installations)
 - **Parallel multi-agent review**: 5 specialized agents analyze code simultaneously, with optional repository-specific agents
-- **Provider aware**: Works with GitHub PRs via `gh` and GitLab MRs via `glab`
+- **Provider scope**: Supports GitLab MRs via `glab`; GitHub PR support is planned
 - **Optional rules integration**: Loads optional project-specific rules when a repository provides them
 - **Confidence scoring**: Rates each finding 0-10, filtering out likely false positives
 - **Three-tier findings**: Categorizes into blocking, non-blocking, and potential issues
@@ -28,10 +28,7 @@ samorev is a Claude Code plugin that automates code review for GitHub Pull Reque
 ### Prerequisites
 
 1. **Claude Code** (latest stable version recommended) installed and configured
-2. **gh CLI** authenticated with GitHub and/or **glab CLI** (v1.30.0 or later) authenticated with GitLab:
-   ```bash
-   gh auth login
-   ```
+2. **glab CLI** (v1.30.0 or later) authenticated with GitLab:
    ```bash
    glab auth login
    ```
@@ -42,7 +39,7 @@ Install samorev globally so `/review-mr` works from any directory:
 
 ```bash
 # Clone to Claude Code's config directory
-git clone --recurse-submodules https://github.com/Tanya301/samorev.git ~/.claude/samorev
+git clone https://github.com/Tanya301/samorev.git ~/.claude/samorev
 
 # Create symlink for the command
 mkdir -p ~/.claude/commands
@@ -51,7 +48,7 @@ ln -s ~/.claude/samorev/.claude/commands/review-mr.md ~/.claude/commands/review-
 
 To update:
 ```bash
-cd ~/.claude/samorev && git pull && git submodule update --init --recursive
+cd ~/.claude/samorev && git pull
 ```
 
 ### Project-local Installation
@@ -59,11 +56,8 @@ cd ~/.claude/samorev && git pull && git submodule update --init --recursive
 If you prefer to install samorev as part of a specific project:
 
 ```bash
-# Clone the repo with submodules
-git clone --recurse-submodules https://github.com/Tanya301/samorev.git
-
-# Or if already cloned, initialize submodules
-git submodule update --init --recursive
+# Clone the repo
+git clone https://github.com/Tanya301/samorev.git
 ```
 
 The `/review-mr` command will be available when running Claude Code from within the samorev directory or any project that includes samorev as a submodule.
@@ -71,9 +65,6 @@ The `/review-mr` command will be available when running Claude Code from within 
 ## Usage
 
 ```bash
-# Review a GitHub PR by URL
-/review-mr https://github.com/example-org/example-repo/pull/123
-
 # Review a GitLab MR by URL
 /review-mr https://gitlab.com/example-org/example-repo/-/merge_requests/123
 
@@ -86,6 +77,8 @@ The `/review-mr` command will be available when running Claude Code from within 
 # Exit with code 1 if blocking issues found (for CI integration)
 /review-mr 123 --blocking
 ```
+
+GitHub PR review support is planned, but this command does not yet fetch, analyze, or post GitHub PR reviews end to end.
 
 **Flags:**
 - `--no-comment` - Output review to terminal only, don't post to MR
@@ -134,8 +127,7 @@ ignore:
         ▼
 ┌───────────────────┐
 │  Self-Update      │
-│  (git pull/       │
-│   submodule update)
+│  (git pull)       │
 └───────────────────┘
         │
         ▼
