@@ -1,27 +1,26 @@
 ---
-description: Review a GitLab MR using parallel AI agents
-argument-hint: <MR-URL or number>
+description: Review a GitHub PR or GitLab MR using parallel AI agents
+argument-hint: <PR/MR-URL or number>
 allowed-tools: Bash, Read, Grep, Glob, Task, WebFetch
 ---
 
-# Review GitLab MR
+# Review GitHub PR or GitLab MR
 
-Review a GitLab Merge Request using parallel AI agents for comprehensive code analysis.
-
-GitHub PR support is planned, but this command does not yet fetch, analyze, or post GitHub PR reviews end to end.
+Review a GitHub Pull Request or GitLab Merge Request using parallel AI agents for comprehensive code analysis.
 
 ## Usage
 
 ```
-/review-mr <MR-URL or number> [--no-comment] [--blocking]
+/review-mr <PR/MR-URL or number> [--no-comment] [--blocking]
 ```
 
 **Examples:**
 - `/review-mr https://gitlab.com/example-org/example-repo/-/merge_requests/123`
+- `/review-mr https://github.com/example-org/example-repo/pull/123`
 - `/review-mr 123` (uses current repo context)
 - `/review-mr 123 --no-comment` (only output to terminal, don't post to MR)
 
-**Default behavior:** Reviews are automatically posted as a comment with `glab` when authenticated.
+**Default behavior:** Reviews are automatically posted as a comment when the provider CLI (`gh` or `glab`) is authenticated.
 
 ## Instructions
 
@@ -52,63 +51,61 @@ fi
 > Only post the full review report. Commits speak for themselves.
 > Extra comments like "REV Fix Applied" mislead reviewers into skipping code review.
 
-### Step 1: Parse MR reference (with input validation)
+### Step 1: Parse review reference (with input validation)
 
-Extract and **validate** the project path and MR number from the input.
+Extract and **validate** the project path, provider, review kind, and review number from the input.
 
 **Security: Always validate inputs to prevent command injection!**
 
 ```bash
-# Strict URL validation - supports nested groups (group/subgroup/project)
-if [[ "$MR_REF" =~ ^https://gitlab\.com/(([a-zA-Z0-9_.-]+/)+[a-zA-Z0-9_.-]+)/-/merge_requests/([0-9]+)$ ]]; then
-  PROJECT="${BASH_REMATCH[1]}"
-  MR_NUMBER="${BASH_REMATCH[3]}"
-elif [[ "$MR_REF" =~ ^[0-9]+$ ]]; then
-  MR_NUMBER="$MR_REF"
-  # Verify git remote points to gitlab.com (must be exact domain, not subdomain)
-  REMOTE_URL=$(git remote get-url origin 2>/dev/null)
-  if [[ "$REMOTE_URL" =~ (^|[@/])gitlab\.com[:/](([a-zA-Z0-9_.-]+/)+[a-zA-Z0-9_.-]+)(\.git)?$ ]]; then
-    PROJECT="${BASH_REMATCH[2]}"
-  else
-    echo "Error: Not a GitLab repository"
-    exit 1
+REMOTE_URL=$(git remote get-url origin 2>/dev/null || true)
+PLAN_SCRIPT=""
+for candidate in \
+  "${REV_ROOT:-}/lib/provider_planning.py" \
+  "$PWD/lib/provider_planning.py" \
+  "$PWD/rev/lib/provider_planning.py" \
+  "$HOME/.claude/rev/lib/provider_planning.py"; do
+  if [ -f "$candidate" ]; then
+    PLAN_SCRIPT="$candidate"
+    break
   fi
-else
-  echo "Invalid MR reference - must be URL or number"
+done
+
+if [ -z "$PLAN_SCRIPT" ]; then
+  echo "Error: provider_planning.py not found"
   exit 1
 fi
 
-# Validate extracted values
-if ! [[ "$MR_NUMBER" =~ ^[0-9]+$ ]]; then
-  echo "Invalid MR number"
+if ! PLAN_OUTPUT=$(python3 "$PLAN_SCRIPT" "$MR_REF" --remote-url "$REMOTE_URL" --shell); then
   exit 1
 fi
 
-# Reject path traversal attempts
-if [[ "$PROJECT" == *".."* ]]; then
-  echo "Invalid project path: path traversal detected"
-  exit 1
-fi
-
-# URL-encode the project path for API calls (proper encoding for all special chars)
-PROJECT_URL_ENCODED=$(printf '%s' "$PROJECT" | jq -sRr @uri)
+# Safe to eval: provider_planning.py emits quoted shell assignments after strict validation.
+# Commands that require runtime values use quoted variable expansions such as
+# "${RUN_ID}", so bind those variables before evaluating the command string.
+eval "$PLAN_OUTPUT"
 ```
 
-### Step 2: Fetch MR data
+### Step 2: Fetch review data
 
-Use glab CLI to get MR information:
+Use the provider CLI to get review information:
 
 ```bash
-# Get MR metadata
-MR_JSON=$(glab mr view <MR_NUMBER> --repo <PROJECT> --output json)
+# Get review metadata
+MR_JSON=$(eval "$METADATA_COMMAND")
 
 # Extract key fields for report
-SOURCE_BRANCH=$(echo "$MR_JSON" | jq -r '.source_branch')
-AUTHOR=$(echo "$MR_JSON" | jq -r '.author.username')
+if [ "$REVIEW_PROVIDER" = "github" ]; then
+  SOURCE_BRANCH=$(echo "$MR_JSON" | jq -r '.headRefName')
+  AUTHOR=$(echo "$MR_JSON" | jq -r '.author.login')
+else
+  SOURCE_BRANCH=$(echo "$MR_JSON" | jq -r '.source_branch')
+  AUTHOR=$(echo "$MR_JSON" | jq -r '.author.username')
+fi
 MR_TITLE=$(echo "$MR_JSON" | jq -r '.title')
 
 # Get the diff
-glab mr diff <MR_NUMBER> --repo <PROJECT>
+eval "$DIFF_COMMAND"
 ```
 
 Check if MR should be skipped:
@@ -118,19 +115,27 @@ Check if MR should be skipped:
 
 **Check for existing reviews with new commits:**
 ```bash
-# Get the last REV review comment timestamp
-# Fetch only the 10 most recent notes (sorted desc) to avoid loading the full comment
-# history, which can be massive on MRs with many review cycles.
-LAST_REVIEW_TIME=$(glab api \
-  "projects/<PROJECT_URL_ENCODED>/merge_requests/<MR_NUMBER>/notes?per_page=10&sort=desc" \
-  2>/dev/null | \
-  jq -r '.[] | select(.body | test("samorev Code Review Report|REV Code Review Report|samorev-assisted review|REV-assisted review")) | .created_at' | \
-  head -1 | \
-  grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' | tr 'T' ' ')
+# Get the last REV review comment timestamp using the provider-specific
+# comments operation from provider_planning.py.
+if [ "$REVIEW_PROVIDER" = "github" ]; then
+  LAST_REVIEW_TIME=$(eval "$COMMENTS_COMMAND" 2>/dev/null | \
+    jq -r '.[] | select(.body | test("samorev Code Review Report|REV Code Review Report|samorev-assisted review|REV-assisted review")) | .created_at' | \
+    head -1 | \
+    grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' | tr 'T' ' ')
+else
+  # Fetch only the 10 most recent notes (sorted desc) to avoid loading massive histories.
+  LAST_REVIEW_TIME=$(eval "$COMMENTS_COMMAND" 2>/dev/null | \
+    jq -r '.[] | select(.body | test("samorev Code Review Report|REV Code Review Report|samorev-assisted review|REV-assisted review")) | .created_at' | \
+    head -1 | \
+    grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' | tr 'T' ' ')
+fi
 
-# Get the latest commit timestamp on the MR (includes timezone offset)
-LATEST_COMMIT_TIME=$(glab api "projects/<PROJECT_URL_ENCODED>/merge_requests/<MR_NUMBER>/commits" | \
-  jq -r '.[0].committed_date')
+# Get the latest commit timestamp using the provider-specific commits operation.
+if [ "$REVIEW_PROVIDER" = "github" ]; then
+  LATEST_COMMIT_TIME=$(eval "$COMMITS_COMMAND" 2>/dev/null | jq -r '.[-1].commit.committer.date // empty')
+else
+  LATEST_COMMIT_TIME=$(eval "$COMMITS_COMMAND" 2>/dev/null | jq -r '.[0].committed_date // empty')
+fi
 
 # If review exists but commits are newer, proceed with review
 # If review exists and no new commits, skip
@@ -140,7 +145,7 @@ if [ -n "$LAST_REVIEW_TIME" ]; then
     echo "WARNING: Could not get commit timestamp (API failure?), proceeding with review"
   else
     # Convert to epoch using Python for cross-platform compatibility
-    # LAST_REVIEW_TIME is in '%Y-%m-%d %H:%M:%S' format (extracted from glab output)
+    # LAST_REVIEW_TIME is in '%Y-%m-%d %H:%M:%S' format.
     LAST_REVIEW_EPOCH=$(python3 -c "
 from datetime import datetime
 import sys
@@ -151,7 +156,7 @@ except Exception:
     print('')  # Empty on failure, not 0
 " "$LAST_REVIEW_TIME" 2>/dev/null)
 
-    # LATEST_COMMIT_TIME is ISO 8601 format from GitLab API (e.g., 2025-12-28T19:07:58.000+00:00)
+    # LATEST_COMMIT_TIME is ISO 8601 format from the provider API.
     LATEST_COMMIT_EPOCH=$(python3 -c "
 from datetime import datetime
 import sys
@@ -202,14 +207,26 @@ This ensures we:
 **Always check CI status and include in report, regardless of other findings.**
 
 ```bash
-# Get pipeline status from MR
-MR_JSON=$(glab mr view <MR_NUMBER> --repo <PROJECT> --output json)
-PIPELINE_STATUS=$(echo "$MR_JSON" | jq -r '.pipeline.status // "unknown"')
-PIPELINE_ID=$(echo "$MR_JSON" | jq -r '.pipeline.id // empty')
-PIPELINE_URL=$(echo "$MR_JSON" | jq -r '.pipeline.web_url // empty')
-
-# Get coverage if available
-COVERAGE=$(echo "$MR_JSON" | jq -r '.pipeline.coverage // "N/A"')
+# Get CI/pipeline status using the provider-specific CI operation.
+if [ "$REVIEW_PROVIDER" = "github" ]; then
+  CI_JSON=$(eval "$CI_COMMAND" 2>/dev/null || echo '{"check_runs":[]}')
+  PIPELINE_STATUS=$(echo "$CI_JSON" | jq -r '
+    (.check_runs // []) as $runs |
+    if ($runs | length) == 0 then "unknown"
+    elif any($runs[]; (.conclusion // "") == "failure" or (.conclusion // "") == "timed_out" or (.conclusion // "") == "cancelled") then "failed"
+    elif all($runs[]; (.conclusion // "") == "success" or (.conclusion // "") == "skipped" or (.conclusion // "") == "neutral") then "success"
+    elif any($runs[]; (.status // "") == "queued") then "pending"
+    else "running" end')
+  PIPELINE_ID=$(echo "$CI_JSON" | jq -r '[(.check_runs // [])[] | .html_url // "" | capture("/actions/runs/(?<id>[0-9]+)")? | .id][0] // empty')
+  PIPELINE_URL=$(echo "$CI_JSON" | jq -r '[(.check_runs // [])[] | .html_url // empty][0] // empty')
+  COVERAGE="N/A"
+else
+  MR_JSON=$(eval "$CI_COMMAND")
+  PIPELINE_STATUS=$(echo "$MR_JSON" | jq -r '.head_pipeline.status // .pipeline.status // "unknown"')
+  PIPELINE_ID=$(echo "$MR_JSON" | jq -r '.head_pipeline.id // .pipeline.id // empty')
+  PIPELINE_URL=$(echo "$MR_JSON" | jq -r '.head_pipeline.web_url // .pipeline.web_url // empty')
+  COVERAGE=$(echo "$MR_JSON" | jq -r '.head_pipeline.coverage // .pipeline.coverage // "N/A"')
+fi
 ```
 
 **If pipeline failed or has issues:**
@@ -217,17 +234,26 @@ COVERAGE=$(echo "$MR_JSON" | jq -r '.pipeline.coverage // "N/A"')
 ```bash
 # Get failed jobs
 if [ "$PIPELINE_STATUS" != "success" ] && [ -n "$PIPELINE_ID" ]; then
-  FAILED_JOBS=$(glab api "projects/<PROJECT_URL_ENCODED>/pipelines/$PIPELINE_ID/jobs" | \
-    jq -r '.[] | select(.status == "failed") | "\(.name): \(.web_url)"')
+  if [ "$REVIEW_PROVIDER" = "github" ]; then
+    RUN_ID="$PIPELINE_ID"
+    FAILED_JOBS=$(eval "$FAILED_JOBS_COMMAND" | \
+      jq -r '.jobs[] | select(.conclusion == "failure") | "\(.name): \(.url)"')
 
-  # Get job failure reason (last 50 lines of log)
-  # Use process substitution to avoid subshell variable loss
-  while read -r JOB_ID; do
-    [ -z "$JOB_ID" ] && continue
-    echo "=== Job $JOB_ID failure log ==="
-    glab api "projects/<PROJECT_URL_ENCODED>/jobs/$JOB_ID/trace" 2>/dev/null | tail -50
-  done < <(glab api "projects/<PROJECT_URL_ENCODED>/pipelines/$PIPELINE_ID/jobs" | \
-    jq -r '.[] | select(.status == "failed") | .id')
+    while read -r JOB_ID; do
+      [ -z "$JOB_ID" ] && continue
+      echo "=== Job $JOB_ID failure log ==="
+      eval "$FAILED_JOB_LOG_COMMAND" 2>/dev/null | tail -50
+    done < <(eval "$FAILED_JOBS_COMMAND" | jq -r '.jobs[] | select(.conclusion == "failure") | .databaseId')
+  else
+    FAILED_JOBS=$(eval "$FAILED_JOBS_COMMAND" | \
+      jq -r '.[] | select(.status == "failed") | "\(.name): \(.web_url)"')
+
+    while read -r JOB_ID; do
+      [ -z "$JOB_ID" ] && continue
+      echo "=== Job $JOB_ID failure log ==="
+      eval "$FAILED_JOB_LOG_COMMAND" 2>/dev/null | tail -50
+    done < <(eval "$FAILED_JOBS_COMMAND" | jq -r '.[] | select(.status == "failed") | .id')
+  fi
 fi
 ```
 
@@ -435,7 +461,11 @@ ISSUE_NUM=$(echo "$DESCRIPTION" | grep -oE '#[0-9]+' | head -1 | tr -d '#')
 
 if [ -n "$ISSUE_NUM" ]; then
   # Fetch issue details
-  glab issue view "$ISSUE_NUM" --repo <PROJECT> --output json
+  if [ "$REVIEW_PROVIDER" = "github" ]; then
+    gh issue view "$ISSUE_NUM" --repo "$PROJECT" --json title,body,comments,state,url
+  else
+    glab issue view "$ISSUE_NUM" --repo "$PROJECT" --output json
+  fi
 fi
 ```
 
@@ -603,8 +633,21 @@ The helper outputs a block like:
 Use it to build `PRIOR_CONTEXT`:
 
 ```bash
-PRIOR_CONTEXT=$(python3 "$REPO_ROOT/lib/review_memory.py" \
-  "$PROJECT_URL_ENCODED" "$MR_NUMBER" 2>/dev/null || true)
+if [ "$REVIEW_PROVIDER" = "github" ]; then
+  PRIOR_CONTEXT=$(eval "$COMMENTS_COMMAND" 2>/dev/null | jq -r '
+    def interesting: (.body | test("samorev Code Review Report|REV Code Review Report|samorev-assisted review|REV-assisted review"));
+    "<prior_reviews>",
+    ([.[] | select(interesting) | "- " + (.created_at // "") + " by " + (.user.login // "unknown") + ": " + ((.body // "") | gsub("\n"; " ") | .[0:500])] | .[]),
+    "</prior_reviews>",
+    "",
+    "<recent_discussion>",
+    ([.[] | "- " + (.created_at // "") + " by " + (.user.login // "unknown") + ": " + ((.body // "") | gsub("\n"; " ") | .[0:300])] | .[-10:] | .[]),
+    "</recent_discussion>"
+  ' || true)
+else
+  PRIOR_CONTEXT=$(python3 "$REPO_ROOT/lib/review_memory.py" \
+    "$PROJECT_URL_ENCODED" "$MR_NUMBER" 2>/dev/null || true)
+fi
 ```
 
 If `PRIOR_CONTEXT` is non-empty, inject it into every agent prompt after `</mr_info>`.
@@ -622,15 +665,28 @@ If `PRIOR_CONTEXT` is empty, this is effectively the first review, so proceed no
 3. Identify languages in changed files (from diff headers)
 4. Check commit messages for AI-assisted indicators (look for "Claude", "AI", "Generated")
 5. Build `PRIOR_CONTEXT` using `lib/review_memory.py`
-6. **Load optional project-specific rules** from the `rules/` directory when present
+6. **Load optional project-specific rules** when present in the repository
 
-Load optional project-specific rules:
+To load rules:
 ```bash
-# Rules can be included at ./rules
+# Optional rules can be provided at ./rules/rules
 # The path is relative to the repo root where /review-mr is invoked
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
-PRIOR_CONTEXT=$(python3 "$REPO_ROOT/lib/review_memory.py" \
-  "$PROJECT_URL_ENCODED" "$MR_NUMBER" 2>/dev/null || true)
+if [ "$REVIEW_PROVIDER" = "github" ]; then
+  PRIOR_CONTEXT=$(eval "$COMMENTS_COMMAND" 2>/dev/null | jq -r '
+    def interesting: (.body | test("samorev Code Review Report|REV Code Review Report|samorev-assisted review|REV-assisted review"));
+    "<prior_reviews>",
+    ([.[] | select(interesting) | "- " + (.created_at // "") + " by " + (.user.login // "unknown") + ": " + ((.body // "") | gsub("\n"; " ") | .[0:500])] | .[]),
+    "</prior_reviews>",
+    "",
+    "<recent_discussion>",
+    ([.[] | "- " + (.created_at // "") + " by " + (.user.login // "unknown") + ": " + ((.body // "") | gsub("\n"; " ") | .[0:300])] | .[-10:] | .[]),
+    "</recent_discussion>"
+  ' || true)
+else
+  PRIOR_CONTEXT=$(python3 "$REPO_ROOT/lib/review_memory.py" \
+    "$PROJECT_URL_ENCODED" "$MR_NUMBER" 2>/dev/null || true)
+fi
 RULES_CONTENT=""
 RULES_LOADED=false
 
@@ -678,7 +734,7 @@ For each agent, include in the prompt:
 
 **Agent 1: Security Reviewer** (model: opus)
 ```
-You are a security expert. Review this GitLab MR diff for security issues.
+You are a security expert. Review this PR/MR diff for security issues.
 
 <diff>
 {DIFF_CONTENT}
@@ -725,7 +781,7 @@ If no security issues found, output: NO_FINDINGS
 
 **Agent 2: Bug Hunter** (model: opus)
 ```
-You are a bug detection expert. Review this GitLab MR diff for bugs and logic errors.
+You are a bug detection expert. Review this PR/MR diff for bugs and logic errors.
 
 <diff>
 {DIFF_CONTENT}
@@ -773,7 +829,7 @@ If no bugs found, output: NO_FINDINGS
 
 **Agent 3: Test Analyzer** (model: sonnet)
 ```
-You are a test quality expert. Review this GitLab MR diff for test coverage and quality.
+You are a test quality expert. Review this PR/MR diff for test coverage and quality.
 
 <diff>
 {DIFF_CONTENT}
@@ -816,7 +872,7 @@ If no test issues found, output: NO_FINDINGS
 
 **Agent 4: Guidelines Checker** (model: sonnet)
 ```
-You are a code style and guidelines expert. Review this GitLab MR diff for convention violations.
+You are a code style and guidelines expert. Review this PR/MR diff for convention violations.
 
 <diff>
 {DIFF_CONTENT}
@@ -826,9 +882,9 @@ You are a code style and guidelines expert. Review this GitLab MR diff for conve
 {CLAUDE_MD_CONTENT or "No CLAUDE.md found"}
 </project_guidelines>
 
-<project_rules>
-{RULES_CONTENT - Include all optional project-specific .mdc files when present}
-</project_rules>
+<project_specific_rules>
+{RULES_CONTENT - Include optional project-specific rule files}
+</project_specific_rules>
 
 <mr_info>
 Title: {MR_TITLE}
@@ -856,7 +912,7 @@ FINDING:
 
 Confidence scoring (0-10):
 - **+3**: Clear violation of explicit documented rule
-- **+2**: Violates CLAUDE.md or project rules directly
+- **+2**: Violates CLAUDE.md or project-specific rules directly
 - **+2**: Definite violation vs. subjective preference
 - **+2**: Consistent with how the rule is applied elsewhere
 - **+1**: Newly introduced (not pre-existing)
@@ -867,7 +923,7 @@ If no guideline issues found, output: NO_FINDINGS
 
 **Agent 5: Docs Reviewer** (model: sonnet)
 ```
-You are a documentation expert. Review this GitLab MR diff for documentation quality.
+You are a documentation expert. Review this PR/MR diff for documentation quality.
 
 <diff>
 {DIFF_CONTENT}
@@ -909,9 +965,9 @@ Only report findings with confidence >= 4.
 If no documentation issues found, output: NO_FINDINGS
 ```
 
-**Agent 6: Sqitch Migration Checker** (model: opus) **[configured repositories only]**
+**Agent 6: Sqitch Migration Checker** (model: opus) **[repository-specific migration checks only]**
 
-Only launch this agent when the repository configuration enables Sqitch migration checks:
+Only launch this agent when repository-specific migration checks are enabled:
 
 ```
 You are a PostgreSQL database migration expert. Verify all database schema changes have Sqitch migrations.
@@ -970,11 +1026,11 @@ If no migration issues found, output: NO_FINDINGS
 
 ### Step 5: Collect results
 
-Use TaskOutput to collect results from all agents (5 agents normally, 6 when an optional repository-specific agent is enabled) (blocking mode).
+Use TaskOutput to collect results from all agents (5 agents normally, 6 when repository-specific migration checks are enabled) (blocking mode).
 
 **Error handling:**
 - If an agent times out (>2 minutes), note it in the report but continue with other results
-- If glab commands fail, report the error and exit gracefully
+- If provider CLI commands fail, report the error and exit gracefully
 - If diff is too large (>50KB), warn and truncate to first 50KB
 
 ### Step 5.5: Validate findings and assign confidence scores
@@ -1082,7 +1138,6 @@ Format the final report:
 - **MR:** {PROJECT}!{MR_NUMBER} - {MR_TITLE}
 - **Author:** {AUTHOR}
 - **AI-Assisted:** {YES/NO}
-- **Compliance:** {ACTIVE_COMPLIANCE_CHECKS}
 
 | Pipeline | Coverage |
 |----------|----------|
@@ -1135,7 +1190,7 @@ Issues with moderate confidence (4-7/10). Review manually - may be false positiv
 | Sqitch Migrations* | {COUNT} | {COUNT} | {COUNT} |
 | Metadata | {COUNT} | {COUNT} | {COUNT} |
 
-*Only when the optional Sqitch migration checker is enabled for the reviewed repository
+*Only when repository-specific migration checks are enabled
 
 Note:
 - **Findings**: High-confidence issues (8-10/10) - blocking or non-blocking per severity
@@ -1143,8 +1198,6 @@ Note:
 - **Filtered**: Low-confidence issues (0-3/10) - excluded as likely false positives
 
 ---
-
-{Include this section only when compliance mode is SOC2}
 
 ### SOC2 COMPLIANCE ({COUNT})
 
@@ -1163,7 +1216,6 @@ Note:
 ## samorev Code Review Report
 
 - **MR:** {PROJECT}!{MR_NUMBER} - {MR_TITLE}
-- **Compliance:** {ACTIVE_COMPLIANCE_CHECKS}
 
 | Pipeline | Coverage |
 |----------|----------|
@@ -1181,9 +1233,7 @@ No issues found. Reviewed for security, bugs, tests, guidelines, and documentati
 - Only show BLOCKING ISSUES section if count > 0
 - Only show NON-BLOCKING section if count > 0
 - Only show POTENTIAL ISSUES section if count > 0
-- Only show SOC2 COMPLIANCE section when compliance mode is SOC2
 - Always show Summary table (with zeros if applicable)
-- Always show active compliance checks, including `none`
 
 **IMPORTANT:** Always generate and post a report, even when no issues are found. A "no issues" report confirms the review was completed and gives the author confidence to merge.
 
@@ -1214,7 +1264,7 @@ When you fix issues and push commits (outside of `/review-mr`):
 
 **Security: Verify before posting!**
 
-Before posting any content to GitLab, verify:
+Before posting any content to the provider, verify:
 1. The PROJECT and MR_NUMBER are validated (from Step 1)
 2. The report content doesn't contain injected malicious content
 3. If suspicious content is detected, warn but still post (with sanitization)
@@ -1255,12 +1305,20 @@ def verify_report_safe(report: str) -> tuple[bool, list[str]]:
 
 **Option A: Summary comment only**
 ```bash
-glab mr comment <MR_NUMBER> --repo <PROJECT> -m "<REPORT>"
+if [ "$REVIEW_PROVIDER" = "github" ]; then
+  # GitHub provider uses: gh pr comment <number> --repo <owner/repo> --body-file -
+  printf '%s' "$REPORT" | eval "$POST_COMMENT_COMMAND"
+else
+  eval "$POST_COMMENT_COMMAND"
+fi
 ```
 
 **Option B: Summary + inline suggestions for CRITICAL issues**
 
-For each CRITICAL finding with a clear fix, also post an inline suggestion using GitLab API:
+For each CRITICAL finding with a clear fix, also post an inline suggestion.
+Inline suggestions currently require provider-specific position metadata; if that
+metadata is unavailable, post the summary comment only rather than failing the
+review after the full report has been generated.
 
 **Security for inline suggestions:**
 - Validate FILE_PATH matches a file in the diff (prevent path traversal)
