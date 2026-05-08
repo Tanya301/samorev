@@ -264,93 +264,53 @@ Where STATUS_EMOJI is:
 > **Fix:** Review failed jobs and fix errors before merge
 ```
 
-### Step 2.5: SOC2 compliance checks (BLOCKING)
+### Step 2.5: Compliance mode detection
 
-**These checks are BLOCKING for SOC2 compliance (CC6.1, CC8.1).**
+Compliance checks are config-driven. Detect the active mode from REV config and
+default safely to `none` when no repo config exists; do not require operators to
+pass a "no SOC2" flag for ordinary repos.
 
-Run the following checks and include results in the report:
+Supported config examples:
+
+```yaml
+compliance: soc2
+```
+
+```yaml
+compliance:
+  mode: soc2
+```
+
+```yaml
+compliance_mode: iso27001
+```
+
+Use `lib/compliance.py` as the source of truth:
 
 ```bash
-# Get MR metadata as JSON
-MR_JSON=$(glab mr view <MR_NUMBER> --repo <PROJECT> --output json)
+COMPLIANCE_REPORT=$(python3 - <<'PY'
+import json
+import os
+import sys
 
-# Extract fields
-REVIEWERS=$(echo "$MR_JSON" | jq -r '.reviewers // [] | .[].username | select(. != null)')
-ASSIGNEES=$(echo "$MR_JSON" | jq -r '.assignees // [] | .[].username | select(. != null)')
-AUTHOR=$(echo "$MR_JSON" | jq -r '.author.username')
-DESCRIPTION=$(echo "$MR_JSON" | jq -r '.description // ""')
-LABELS=$(echo "$MR_JSON" | jq -r '.labels // [] | .[]')
+repo_root = os.environ.get("REPO_ROOT", ".")
+sys.path.insert(0, os.path.join(repo_root, "lib"))
+
+from compliance import render_compliance_report
+
+mr_data = json.loads(os.environ["MR_JSON"])
+print(render_compliance_report(repo_root, mr_data).markdown)
+PY
+)
 ```
 
-**SOC2 compliance checklist:**
+Always include the first line of `COMPLIANCE_REPORT` in the final report, for
+example `Active compliance checks: none` or `Active compliance checks: SOC2`.
 
-| Check | Requirement | How to Verify |
-|-------|-------------|---------------|
-| **Linked Issue** | MR must reference an issue | Description contains `#123`, `Closes #123`, or issue URL |
-| **Assigned Reviewer** | MR must have at least one reviewer who is NOT the author | `reviewers` array is non-empty and doesn't include author |
-| **Author != Merger** | Different person must merge (enforced by GitLab settings) | Informational only - GitLab enforces this |
-| **Description Quality** | MR must have meaningful description | Description is >50 chars and not just template placeholders |
-
-```python
-def check_soc2_compliance(mr_data: dict) -> list[dict]:
-    """Check MR for SOC2 compliance issues.
-
-    Returns list of compliance findings (blocking if severity is HIGH/CRITICAL).
-    """
-    findings = []
-    author = mr_data.get('author', {}).get('username', '')
-    reviewers = [r.get('username') for r in mr_data.get('reviewers', [])]
-    description = mr_data.get('description', '') or ''
-
-    # Check 1: Linked Issue
-    # Use word boundaries to avoid false positives from code comments, CSS IDs, etc.
-    issue_patterns = [
-        r'(?<!\w)#\d+(?!\w)',              # #123 (with word boundaries)
-        r'[Cc]loses?\s+#\d+',              # Closes #123
-        r'[Ff]ixes?\s+#\d+',               # Fixes #123
-        r'[Rr]esolves?\s+#\d+',            # Resolves #123
-        r'gitlab\.com/.+/-/issues/\d+',    # Full issue URL
-    ]
-    has_issue_link = any(re.search(p, description) for p in issue_patterns)
-    if not has_issue_link:
-        findings.append({
-            'check': 'SOC2: Linked Issue',
-            'severity': 'HIGH',
-            'issue': 'MR has no linked issue',
-            'suggestion': 'Add issue reference (e.g., "Closes #123") to description',
-            'soc2_ref': 'CC8.1 - Change Management'
-        })
-
-    # Check 2: Assigned Reviewer (not author)
-    valid_reviewers = [r for r in reviewers if r != author]
-    if not valid_reviewers:
-        findings.append({
-            'check': 'SOC2: Code Review',
-            'severity': 'HIGH',
-            'issue': 'MR has no assigned reviewer (or reviewer is author)',
-            'suggestion': f'Assign a reviewer other than @{author}',
-            'soc2_ref': 'CC6.1 - Logical Access Controls'
-        })
-
-    # Check 3: Description Quality
-    # Remove common template placeholders (only header-only lines, not content after headers)
-    clean_desc = re.sub(r'^##\s*(Summary|Description|Changes|TODO)\s*$', '', description, flags=re.MULTILINE)
-    clean_desc = re.sub(r'\[.*?\]\(.*?\)', '', clean_desc)  # Remove markdown links
-    clean_desc = clean_desc.strip()
-
-    if len(clean_desc) < 50:
-        findings.append({
-            'check': 'SOC2: Change Documentation',
-            'severity': 'MEDIUM',
-            'issue': 'MR description is too brief or empty',
-            'suggestion': 'Add detailed description explaining what changes and why',
-            'soc2_ref': 'CC8.1 - Change Management'
-        })
-
-    return findings
-```
-
-**Report these in a separate "SOC2 COMPLIANCE" section of the review.**
+Only when the detected mode is `soc2`, include the `SOC2 COMPLIANCE` section
+from `COMPLIANCE_REPORT`. SOC2 checks cover linked issue, assigned reviewer who
+is not the author, and meaningful change description. Future named modes are
+reported as active but do not emit SOC2 sections until built-in checks exist.
 
 ### Step 2.6: MR metadata quality analysis
 
@@ -1133,6 +1093,7 @@ Format the final report:
 - **MR:** {PROJECT}!{MR_NUMBER} - {MR_TITLE}
 - **Author:** {AUTHOR}
 - **AI-Assisted:** {YES/NO}
+- **Compliance:** {ACTIVE_COMPLIANCE_CHECKS}
 
 | Pipeline | Coverage |
 |----------|----------|
@@ -1194,6 +1155,8 @@ Note:
 
 ---
 
+{Include this section only when compliance mode is SOC2}
+
 ### SOC2 COMPLIANCE ({COUNT})
 
 {For each SOC2 finding:}
@@ -1211,6 +1174,7 @@ Note:
 ## REV Code Review Report
 
 - **MR:** {PROJECT}!{MR_NUMBER} - {MR_TITLE}
+- **Compliance:** {ACTIVE_COMPLIANCE_CHECKS}
 
 | Pipeline | Coverage |
 |----------|----------|
@@ -1228,7 +1192,9 @@ No issues found. Reviewed for security, bugs, tests, guidelines, and documentati
 - Only show BLOCKING ISSUES section if count > 0
 - Only show NON-BLOCKING section if count > 0
 - Only show POTENTIAL ISSUES section if count > 0
+- Only show SOC2 COMPLIANCE section when compliance mode is SOC2
 - Always show Summary table (with zeros if applicable)
+- Always show active compliance checks, including `none`
 
 **IMPORTANT:** Always generate and post a report, even when no issues are found. A "no issues" report confirms the review was completed and gives the author confidence to merge.
 
