@@ -39,6 +39,12 @@ class FetchPlan:
     metadata_command: tuple[str, ...]
     diff_command: tuple[str, ...]
     api_resource: str
+    comments_command: tuple[str, ...]
+    commits_command: tuple[str, ...]
+    ci_command: tuple[str, ...]
+    failed_jobs_command: tuple[str, ...]
+    failed_job_log_command: tuple[str, ...]
+    post_comment_command: tuple[str, ...]
 
 
 class ReviewReferenceError(ValueError):
@@ -116,7 +122,7 @@ def plan_fetch(reference: ReviewReference) -> FetchPlan:
     project = reference.project_path
 
     if reference.provider == "github":
-        json_fields = "author,baseRefName,body,headRefName,isDraft,number,state,title,url"
+        json_fields = "assignees,author,baseRefName,body,headRefName,isDraft,labels,number,reviewRequests,state,title,url"
         return FetchPlan(
             provider="github",
             metadata_command=(
@@ -131,15 +137,41 @@ def plan_fetch(reference: ReviewReference) -> FetchPlan:
             ),
             diff_command=("gh", "pr", "diff", number, "--repo", project),
             api_resource=f"repos/{project}/pulls/{number}",
+            comments_command=("gh", "api", f"repos/{project}/issues/{number}/comments", "--paginate"),
+            commits_command=("gh", "api", f"repos/{project}/pulls/{number}/commits", "--paginate"),
+            ci_command=("gh", "api", f"repos/{project}/commits/pull/{number}/head/check-runs", "--paginate"),
+            failed_jobs_command=("gh", "run", "view", "$RUN_ID", "--repo", project, "--json", "jobs"),
+            failed_job_log_command=(
+                "gh",
+                "run",
+                "view",
+                "$RUN_ID",
+                "--repo",
+                project,
+                "--job",
+                "$JOB_ID",
+                "--log-failed",
+            ),
+            post_comment_command=("gh", "pr", "comment", number, "--repo", project, "--body-file", "-"),
         )
 
     if reference.provider == "gitlab":
         encoded_project = quote(project, safe="")
         return FetchPlan(
             provider="gitlab",
-            metadata_command=("glab", "mr", "view", number, "--repo", project, "--output", "json"),
+            metadata_command=("glab", "api", f"projects/{encoded_project}/merge_requests/{number}"),
             diff_command=("glab", "mr", "diff", number, "--repo", project),
             api_resource=f"projects/{encoded_project}/merge_requests/{number}",
+            comments_command=(
+                "glab",
+                "api",
+                f"projects/{encoded_project}/merge_requests/{number}/notes?per_page=10&sort=desc",
+            ),
+            commits_command=("glab", "api", f"projects/{encoded_project}/merge_requests/{number}/commits"),
+            ci_command=("glab", "api", f"projects/{encoded_project}/merge_requests/{number}"),
+            failed_jobs_command=("glab", "api", f"projects/{encoded_project}/pipelines/$PIPELINE_ID/jobs"),
+            failed_job_log_command=("glab", "api", f"projects/{encoded_project}/jobs/$JOB_ID/trace"),
+            post_comment_command=("glab", "mr", "comment", number, "--repo", project, "-m", "$REPORT"),
         )
 
     raise ReviewReferenceError(f"Unsupported provider: {reference.provider}")
@@ -157,6 +189,12 @@ def to_shell_exports(reference: ReviewReference, plan: FetchPlan) -> str:
         "METADATA_COMMAND": shlex.join(plan.metadata_command),
         "DIFF_COMMAND": shlex.join(plan.diff_command),
         "API_RESOURCE": plan.api_resource,
+        "COMMENTS_COMMAND": shlex.join(plan.comments_command),
+        "COMMITS_COMMAND": shlex.join(plan.commits_command),
+        "CI_COMMAND": shlex.join(plan.ci_command),
+        "FAILED_JOBS_COMMAND": shlex.join(plan.failed_jobs_command),
+        "FAILED_JOB_LOG_COMMAND": shlex.join(plan.failed_job_log_command),
+        "POST_COMMENT_COMMAND": shlex.join(plan.post_comment_command),
     }
     return "\n".join(f"{key}={shlex.quote(value)}" for key, value in values.items())
 

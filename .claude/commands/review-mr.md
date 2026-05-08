@@ -92,7 +92,7 @@ Use the provider CLI to get review information:
 
 ```bash
 # Get review metadata
-MR_JSON=$($METADATA_COMMAND)
+MR_JSON=$(eval "$METADATA_COMMAND")
 
 # Extract key fields for report
 if [ "$REVIEW_PROVIDER" = "github" ]; then
@@ -105,7 +105,7 @@ fi
 MR_TITLE=$(echo "$MR_JSON" | jq -r '.title')
 
 # Get the diff
-$DIFF_COMMAND
+eval "$DIFF_COMMAND"
 ```
 
 Check if MR should be skipped:
@@ -115,19 +115,27 @@ Check if MR should be skipped:
 
 **Check for existing reviews with new commits:**
 ```bash
-# Get the last REV review comment timestamp
-# Fetch only the 10 most recent notes (sorted desc) to avoid loading the full comment
-# history, which can be massive on MRs with many review cycles.
-LAST_REVIEW_TIME=$(glab api \
-  "projects/<PROJECT_URL_ENCODED>/merge_requests/<MR_NUMBER>/notes?per_page=10&sort=desc" \
-  2>/dev/null | \
-  jq -r '.[] | select(.body | test("REV Code Review Report|REV-assisted review")) | .created_at' | \
-  head -1 | \
-  grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' | tr 'T' ' ')
+# Get the last REV review comment timestamp using the provider-specific
+# comments operation from provider_planning.py.
+if [ "$REVIEW_PROVIDER" = "github" ]; then
+  LAST_REVIEW_TIME=$(eval "$COMMENTS_COMMAND" 2>/dev/null | \
+    jq -r '.[] | select(.body | test("REV Code Review Report|REV-assisted review")) | .created_at' | \
+    head -1 | \
+    grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' | tr 'T' ' ')
+else
+  # Fetch only the 10 most recent notes (sorted desc) to avoid loading massive histories.
+  LAST_REVIEW_TIME=$(eval "$COMMENTS_COMMAND" 2>/dev/null | \
+    jq -r '.[] | select(.body | test("REV Code Review Report|REV-assisted review")) | .created_at' | \
+    head -1 | \
+    grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' | tr 'T' ' ')
+fi
 
-# Get the latest commit timestamp on the MR (includes timezone offset)
-LATEST_COMMIT_TIME=$(glab api "projects/<PROJECT_URL_ENCODED>/merge_requests/<MR_NUMBER>/commits" | \
-  jq -r '.[0].committed_date')
+# Get the latest commit timestamp using the provider-specific commits operation.
+if [ "$REVIEW_PROVIDER" = "github" ]; then
+  LATEST_COMMIT_TIME=$(eval "$COMMITS_COMMAND" 2>/dev/null | jq -r '.[-1].commit.committer.date // empty')
+else
+  LATEST_COMMIT_TIME=$(eval "$COMMITS_COMMAND" 2>/dev/null | jq -r '.[0].committed_date // empty')
+fi
 
 # If review exists but commits are newer, proceed with review
 # If review exists and no new commits, skip
@@ -137,7 +145,7 @@ if [ -n "$LAST_REVIEW_TIME" ]; then
     echo "WARNING: Could not get commit timestamp (API failure?), proceeding with review"
   else
     # Convert to epoch using Python for cross-platform compatibility
-    # LAST_REVIEW_TIME is in '%Y-%m-%d %H:%M:%S' format (extracted from glab output)
+    # LAST_REVIEW_TIME is in '%Y-%m-%d %H:%M:%S' format.
     LAST_REVIEW_EPOCH=$(python3 -c "
 from datetime import datetime
 import sys
@@ -148,7 +156,7 @@ except Exception:
     print('')  # Empty on failure, not 0
 " "$LAST_REVIEW_TIME" 2>/dev/null)
 
-    # LATEST_COMMIT_TIME is ISO 8601 format from GitLab API (e.g., 2025-12-28T19:07:58.000+00:00)
+    # LATEST_COMMIT_TIME is ISO 8601 format from the provider API.
     LATEST_COMMIT_EPOCH=$(python3 -c "
 from datetime import datetime
 import sys
@@ -199,14 +207,26 @@ This ensures we:
 **Always check CI status and include in report, regardless of other findings.**
 
 ```bash
-# Get pipeline status from MR
-MR_JSON=$(glab mr view <MR_NUMBER> --repo <PROJECT> --output json)
-PIPELINE_STATUS=$(echo "$MR_JSON" | jq -r '.pipeline.status // "unknown"')
-PIPELINE_ID=$(echo "$MR_JSON" | jq -r '.pipeline.id // empty')
-PIPELINE_URL=$(echo "$MR_JSON" | jq -r '.pipeline.web_url // empty')
-
-# Get coverage if available
-COVERAGE=$(echo "$MR_JSON" | jq -r '.pipeline.coverage // "N/A"')
+# Get CI/pipeline status using the provider-specific CI operation.
+if [ "$REVIEW_PROVIDER" = "github" ]; then
+  CI_JSON=$(eval "$CI_COMMAND" 2>/dev/null || echo '{"check_runs":[]}')
+  PIPELINE_STATUS=$(echo "$CI_JSON" | jq -r '
+    (.check_runs // []) as $runs |
+    if ($runs | length) == 0 then "unknown"
+    elif any($runs[]; (.conclusion // "") == "failure" or (.conclusion // "") == "timed_out" or (.conclusion // "") == "cancelled") then "failed"
+    elif all($runs[]; (.conclusion // "") == "success" or (.conclusion // "") == "skipped" or (.conclusion // "") == "neutral") then "success"
+    elif any($runs[]; (.status // "") == "queued") then "pending"
+    else "running" end')
+  PIPELINE_ID=$(echo "$CI_JSON" | jq -r '[(.check_runs // [])[] | .html_url // "" | capture("/actions/runs/(?<id>[0-9]+)")? | .id][0] // empty')
+  PIPELINE_URL=$(echo "$CI_JSON" | jq -r '[(.check_runs // [])[] | .html_url // empty][0] // empty')
+  COVERAGE="N/A"
+else
+  MR_JSON=$(eval "$CI_COMMAND")
+  PIPELINE_STATUS=$(echo "$MR_JSON" | jq -r '.head_pipeline.status // .pipeline.status // "unknown"')
+  PIPELINE_ID=$(echo "$MR_JSON" | jq -r '.head_pipeline.id // .pipeline.id // empty')
+  PIPELINE_URL=$(echo "$MR_JSON" | jq -r '.head_pipeline.web_url // .pipeline.web_url // empty')
+  COVERAGE=$(echo "$MR_JSON" | jq -r '.head_pipeline.coverage // .pipeline.coverage // "N/A"')
+fi
 ```
 
 **If pipeline failed or has issues:**
@@ -214,17 +234,26 @@ COVERAGE=$(echo "$MR_JSON" | jq -r '.pipeline.coverage // "N/A"')
 ```bash
 # Get failed jobs
 if [ "$PIPELINE_STATUS" != "success" ] && [ -n "$PIPELINE_ID" ]; then
-  FAILED_JOBS=$(glab api "projects/<PROJECT_URL_ENCODED>/pipelines/$PIPELINE_ID/jobs" | \
-    jq -r '.[] | select(.status == "failed") | "\(.name): \(.web_url)"')
+  if [ "$REVIEW_PROVIDER" = "github" ]; then
+    RUN_ID="$PIPELINE_ID"
+    FAILED_JOBS=$(eval "$FAILED_JOBS_COMMAND" | \
+      jq -r '.jobs[] | select(.conclusion == "failure") | "\(.name): \(.url)"')
 
-  # Get job failure reason (last 50 lines of log)
-  # Use process substitution to avoid subshell variable loss
-  while read -r JOB_ID; do
-    [ -z "$JOB_ID" ] && continue
-    echo "=== Job $JOB_ID failure log ==="
-    glab api "projects/<PROJECT_URL_ENCODED>/jobs/$JOB_ID/trace" 2>/dev/null | tail -50
-  done < <(glab api "projects/<PROJECT_URL_ENCODED>/pipelines/$PIPELINE_ID/jobs" | \
-    jq -r '.[] | select(.status == "failed") | .id')
+    while read -r JOB_ID; do
+      [ -z "$JOB_ID" ] && continue
+      echo "=== Job $JOB_ID failure log ==="
+      eval "$FAILED_JOB_LOG_COMMAND" 2>/dev/null | tail -50
+    done < <(eval "$FAILED_JOBS_COMMAND" | jq -r '.jobs[] | select(.conclusion == "failure") | .databaseId')
+  else
+    FAILED_JOBS=$(eval "$FAILED_JOBS_COMMAND" | \
+      jq -r '.[] | select(.status == "failed") | "\(.name): \(.web_url)"')
+
+    while read -r JOB_ID; do
+      [ -z "$JOB_ID" ] && continue
+      echo "=== Job $JOB_ID failure log ==="
+      eval "$FAILED_JOB_LOG_COMMAND" 2>/dev/null | tail -50
+    done < <(eval "$FAILED_JOBS_COMMAND" | jq -r '.[] | select(.status == "failed") | .id')
+  fi
 fi
 ```
 
@@ -268,15 +297,23 @@ Where STATUS_EMOJI is:
 Run the following checks and include results in the report:
 
 ```bash
-# Get MR metadata as JSON
-MR_JSON=$(glab mr view <MR_NUMBER> --repo <PROJECT> --output json)
+# Reuse provider metadata JSON
+MR_JSON=$(eval "$METADATA_COMMAND")
 
 # Extract fields
-REVIEWERS=$(echo "$MR_JSON" | jq -r '.reviewers // [] | .[].username | select(. != null)')
-ASSIGNEES=$(echo "$MR_JSON" | jq -r '.assignees // [] | .[].username | select(. != null)')
-AUTHOR=$(echo "$MR_JSON" | jq -r '.author.username')
-DESCRIPTION=$(echo "$MR_JSON" | jq -r '.description // ""')
-LABELS=$(echo "$MR_JSON" | jq -r '.labels // [] | .[]')
+if [ "$REVIEW_PROVIDER" = "github" ]; then
+  REVIEWERS=$(echo "$MR_JSON" | jq -r '.reviewRequests // [] | .[].login? // empty')
+  ASSIGNEES=$(echo "$MR_JSON" | jq -r '.assignees // [] | .[].login? // empty')
+  AUTHOR=$(echo "$MR_JSON" | jq -r '.author.login')
+  DESCRIPTION=$(echo "$MR_JSON" | jq -r '.body // ""')
+  LABELS=$(echo "$MR_JSON" | jq -r '.labels // [] | .[].name? // empty')
+else
+  REVIEWERS=$(echo "$MR_JSON" | jq -r '.reviewers // [] | .[].username | select(. != null)')
+  ASSIGNEES=$(echo "$MR_JSON" | jq -r '.assignees // [] | .[].username | select(. != null)')
+  AUTHOR=$(echo "$MR_JSON" | jq -r '.author.username')
+  DESCRIPTION=$(echo "$MR_JSON" | jq -r '.description // ""')
+  LABELS=$(echo "$MR_JSON" | jq -r '.labels // [] | .[]')
+fi
 ```
 
 **SOC2 compliance checklist:**
@@ -472,7 +509,11 @@ ISSUE_NUM=$(echo "$DESCRIPTION" | grep -oE '#[0-9]+' | head -1 | tr -d '#')
 
 if [ -n "$ISSUE_NUM" ]; then
   # Fetch issue details
-  glab issue view "$ISSUE_NUM" --repo <PROJECT> --output json
+  if [ "$REVIEW_PROVIDER" = "github" ]; then
+    gh issue view "$ISSUE_NUM" --repo "$PROJECT" --json title,body,comments,state,url
+  else
+    glab issue view "$ISSUE_NUM" --repo "$PROJECT" --output json
+  fi
 fi
 ```
 
@@ -640,8 +681,21 @@ The helper outputs a block like:
 Use it to build `PRIOR_CONTEXT`:
 
 ```bash
-PRIOR_CONTEXT=$(python3 "$REPO_ROOT/lib/review_memory.py" \
-  "$PROJECT_URL_ENCODED" "$MR_NUMBER" 2>/dev/null || true)
+if [ "$REVIEW_PROVIDER" = "github" ]; then
+  PRIOR_CONTEXT=$(eval "$COMMENTS_COMMAND" 2>/dev/null | jq -r '
+    def interesting: (.body | test("REV Code Review Report|REV-assisted review"));
+    "<prior_reviews>",
+    ([.[] | select(interesting) | "- " + (.created_at // "") + " by " + (.user.login // "unknown") + ": " + ((.body // "") | gsub("\n"; " ") | .[0:500])] | .[]),
+    "</prior_reviews>",
+    "",
+    "<recent_discussion>",
+    ([.[] | "- " + (.created_at // "") + " by " + (.user.login // "unknown") + ": " + ((.body // "") | gsub("\n"; " ") | .[0:300])] | .[-10:] | .[]),
+    "</recent_discussion>"
+  ' || true)
+else
+  PRIOR_CONTEXT=$(python3 "$REPO_ROOT/lib/review_memory.py" \
+    "$PROJECT_URL_ENCODED" "$MR_NUMBER" 2>/dev/null || true)
+fi
 ```
 
 If `PRIOR_CONTEXT` is non-empty, inject it into every agent prompt after `</mr_info>`.
@@ -666,8 +720,21 @@ To load rules:
 # Rules are included as a git submodule at ./rules
 # The path is relative to the repo root where /review-mr is invoked
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
-PRIOR_CONTEXT=$(python3 "$REPO_ROOT/lib/review_memory.py" \
-  "$PROJECT_URL_ENCODED" "$MR_NUMBER" 2>/dev/null || true)
+if [ "$REVIEW_PROVIDER" = "github" ]; then
+  PRIOR_CONTEXT=$(eval "$COMMENTS_COMMAND" 2>/dev/null | jq -r '
+    def interesting: (.body | test("REV Code Review Report|REV-assisted review"));
+    "<prior_reviews>",
+    ([.[] | select(interesting) | "- " + (.created_at // "") + " by " + (.user.login // "unknown") + ": " + ((.body // "") | gsub("\n"; " ") | .[0:500])] | .[]),
+    "</prior_reviews>",
+    "",
+    "<recent_discussion>",
+    ([.[] | "- " + (.created_at // "") + " by " + (.user.login // "unknown") + ": " + ((.body // "") | gsub("\n"; " ") | .[0:300])] | .[-10:] | .[]),
+    "</recent_discussion>"
+  ' || true)
+else
+  PRIOR_CONTEXT=$(python3 "$REPO_ROOT/lib/review_memory.py" \
+    "$PROJECT_URL_ENCODED" "$MR_NUMBER" 2>/dev/null || true)
+fi
 RULES_CONTENT=""
 RULES_LOADED=false
 
@@ -726,7 +793,7 @@ For each agent, include in the prompt:
 
 **Agent 1: Security Reviewer** (model: opus)
 ```
-You are a security expert. Review this GitLab MR diff for security issues.
+You are a security expert. Review this PR/MR diff for security issues.
 
 <diff>
 {DIFF_CONTENT}
@@ -773,7 +840,7 @@ If no security issues found, output: NO_FINDINGS
 
 **Agent 2: Bug Hunter** (model: opus)
 ```
-You are a bug detection expert. Review this GitLab MR diff for bugs and logic errors.
+You are a bug detection expert. Review this PR/MR diff for bugs and logic errors.
 
 <diff>
 {DIFF_CONTENT}
@@ -821,7 +888,7 @@ If no bugs found, output: NO_FINDINGS
 
 **Agent 3: Test Analyzer** (model: sonnet)
 ```
-You are a test quality expert. Review this GitLab MR diff for test coverage and quality.
+You are a test quality expert. Review this PR/MR diff for test coverage and quality.
 
 <diff>
 {DIFF_CONTENT}
@@ -864,7 +931,7 @@ If no test issues found, output: NO_FINDINGS
 
 **Agent 4: Guidelines Checker** (model: sonnet)
 ```
-You are a code style and guidelines expert. Review this GitLab MR diff for convention violations.
+You are a code style and guidelines expert. Review this PR/MR diff for convention violations.
 
 <diff>
 {DIFF_CONTENT}
@@ -915,7 +982,7 @@ If no guideline issues found, output: NO_FINDINGS
 
 **Agent 5: Docs Reviewer** (model: sonnet)
 ```
-You are a documentation expert. Review this GitLab MR diff for documentation quality.
+You are a documentation expert. Review this PR/MR diff for documentation quality.
 
 <diff>
 {DIFF_CONTENT}
@@ -1022,7 +1089,7 @@ Use TaskOutput to collect results from all agents (5 agents normally, 6 for post
 
 **Error handling:**
 - If an agent times out (>2 minutes), note it in the report but continue with other results
-- If glab commands fail, report the error and exit gracefully
+- If provider CLI commands fail, report the error and exit gracefully
 - If diff is too large (>50KB), warn and truncate to first 50KB
 
 ### Step 5.5: Validate findings and assign confidence scores
@@ -1256,7 +1323,7 @@ When you fix issues and push commits (outside of `/review-mr`):
 
 **Security: Verify before posting!**
 
-Before posting any content to GitLab, verify:
+Before posting any content to the provider, verify:
 1. The PROJECT and MR_NUMBER are validated (from Step 1)
 2. The report content doesn't contain injected malicious content
 3. If suspicious content is detected, warn but still post (with sanitization)
@@ -1297,12 +1364,20 @@ def verify_report_safe(report: str) -> tuple[bool, list[str]]:
 
 **Option A: Summary comment only**
 ```bash
-glab mr comment <MR_NUMBER> --repo <PROJECT> -m "<REPORT>"
+if [ "$REVIEW_PROVIDER" = "github" ]; then
+  # GitHub provider uses: gh pr comment <number> --repo <owner/repo> --body-file -
+  printf '%s' "$REPORT" | eval "$POST_COMMENT_COMMAND"
+else
+  eval "$POST_COMMENT_COMMAND"
+fi
 ```
 
 **Option B: Summary + inline suggestions for CRITICAL issues**
 
-For each CRITICAL finding with a clear fix, also post an inline suggestion using GitLab API:
+For each CRITICAL finding with a clear fix, also post an inline suggestion.
+Inline suggestions currently require provider-specific position metadata; if that
+metadata is unavailable, post the summary comment only rather than failing the
+review after the full report has been generated.
 
 **Security for inline suggestions:**
 - Validate FILE_PATH matches a file in the diff (prevent path traversal)
