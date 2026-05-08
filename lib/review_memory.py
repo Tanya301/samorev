@@ -22,6 +22,12 @@ import urllib.request
 
 HARD_CAP = 15_000
 DISCUSSION_COMMENT_CAP = 1000
+REPORT_MARKERS = (
+    "samorev Code Review Report",
+    "REV Code Review Report",
+    "samorev-assisted review",
+    "REV-assisted review",
+)
 
 
 def fetch_notes(host: str, project_encoded: str, mr_number: str, token: str) -> list:
@@ -48,7 +54,7 @@ def extract_prior_reviews(notes: list) -> str:
 
     for note in notes:
         body = note.get("body", "")
-        if "REV Code Review Report" not in body and "REV-assisted review" not in body:
+        if not any(marker in body for marker in REPORT_MARKERS):
             continue
 
         rev_count += 1
@@ -115,7 +121,7 @@ def extract_discussion(notes: list) -> str:
         if note.get("system", False):
             continue
         body = note.get("body", "")
-        if "REV Code Review Report" in body or "REV-assisted review" in body:
+        if any(marker in body for marker in REPORT_MARKERS):
             continue
         if len(body.strip()) < 10:
             continue

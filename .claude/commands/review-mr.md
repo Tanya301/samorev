@@ -1,6 +1,6 @@
 ---
 description: Review a GitLab MR using parallel AI agents
-argument-hint: <MR-URL or MR-number>
+argument-hint: <MR-URL or number>
 allowed-tools: Bash, Read, Grep, Glob, Task, WebFetch
 ---
 
@@ -8,18 +8,20 @@ allowed-tools: Bash, Read, Grep, Glob, Task, WebFetch
 
 Review a GitLab Merge Request using parallel AI agents for comprehensive code analysis.
 
+GitHub PR support is planned, but this command does not yet fetch, analyze, or post GitHub PR reviews end to end.
+
 ## Usage
 
 ```
-/review-mr <MR-URL or MR-number> [--no-comment] [--blocking]
+/review-mr <MR-URL or number> [--no-comment] [--blocking]
 ```
 
 **Examples:**
-- `/review-mr https://gitlab.com/postgres-ai/platform/-/merge_requests/123`
+- `/review-mr https://gitlab.com/example-org/example-repo/-/merge_requests/123`
 - `/review-mr 123` (uses current repo context)
 - `/review-mr 123 --no-comment` (only output to terminal, don't post to MR)
 
-**Default behavior:** Reviews are automatically posted to the MR as a comment when `glab` is authenticated.
+**Default behavior:** Reviews are automatically posted as a comment with `glab` when authenticated.
 
 ## Instructions
 
@@ -27,21 +29,19 @@ You are a code review orchestrator. Follow these steps:
 
 ### Step 0: Self-update check
 
-Before starting the review, run this script to pull the latest REV version. This ensures you're using the most recent review logic.
+Before starting the review, run this script to pull the latest samorev version. This ensures you're using the most recent review logic.
 
 ```bash
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-if [[ "$(git remote get-url origin 2>/dev/null)" == *"postgres-ai/rev"* ]]; then
-  # Running from REV repo itself
+if [[ "$(git remote get-url origin 2>/dev/null)" == *"samorev"* ]]; then
+  # Running from samorev repo itself
   git pull --quiet origin main 2>/dev/null
-  git submodule update --init --recursive --quiet 2>/dev/null
 elif [[ -d "$REPO_ROOT/rev/.git" ]] || [[ -f "$REPO_ROOT/rev/.git" ]]; then
-  # REV is a subdirectory (clone or submodule)
+  # samorev is a subdirectory (clone or submodule)
   cd "$REPO_ROOT/rev"
-  if [[ "$(git remote get-url origin 2>/dev/null)" == *"postgres-ai/rev"* ]]; then
+  if [[ "$(git remote get-url origin 2>/dev/null)" == *"samorev"* ]]; then
     [[ -f .git ]] && cd "$REPO_ROOT" && git submodule update --remote --quiet rev 2>/dev/null && cd "$REPO_ROOT/rev"
     [[ -d .git ]] && git pull --quiet origin main 2>/dev/null
-    git submodule update --init --recursive --quiet 2>/dev/null
   fi
   cd "$REPO_ROOT"
 fi
@@ -124,7 +124,7 @@ Check if MR should be skipped:
 LAST_REVIEW_TIME=$(glab api \
   "projects/<PROJECT_URL_ENCODED>/merge_requests/<MR_NUMBER>/notes?per_page=10&sort=desc" \
   2>/dev/null | \
-  jq -r '.[] | select(.body | test("REV Code Review Report|REV-assisted review")) | .created_at' | \
+  jq -r '.[] | select(.body | test("samorev Code Review Report|REV Code Review Report|samorev-assisted review|REV-assisted review")) | .created_at' | \
   head -1 | \
   grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' | tr 'T' ' ')
 
@@ -622,11 +622,11 @@ If `PRIOR_CONTEXT` is empty, this is effectively the first review, so proceed no
 3. Identify languages in changed files (from diff headers)
 4. Check commit messages for AI-assisted indicators (look for "Claude", "AI", "Generated")
 5. Build `PRIOR_CONTEXT` using `lib/review_memory.py`
-6. **Load postgres-ai rules** from the `rules/` submodule (included in this repo)
+6. **Load optional project-specific rules** from the `rules/` directory when present
 
-To load rules:
+Load optional project-specific rules:
 ```bash
-# Rules are included as a git submodule at ./rules
+# Rules can be included at ./rules
 # The path is relative to the repo root where /review-mr is invoked
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
 PRIOR_CONTEXT=$(python3 "$REPO_ROOT/lib/review_memory.py" \
@@ -641,21 +641,10 @@ if [ -d "$REPO_ROOT/rules/rules" ]; then
   fi
 fi
 
-# Fallback: fetch from GitLab API if submodule not initialized or empty
-if [ "$RULES_LOADED" = false ]; then
-  RULES_CONTENT=$(glab api projects/postgres-ai%2Frules/repository/tree --paginate -F path=rules 2>/dev/null | \
-    jq -r '.[].name' 2>/dev/null | while read f; do
-      glab api "projects/postgres-ai%2Frules/repository/files/rules%2F$f/raw" --paginate 2>/dev/null
-    done)
-  if [ -n "$RULES_CONTENT" ]; then
-    RULES_LOADED=true
-  fi
-fi
-
 # If rules still not loaded, proceed without them but note in report
 if [ "$RULES_LOADED" = false ]; then
-  echo "WARNING: Could not load postgres-ai rules. Proceeding without organizational guidelines."
-  RULES_CONTENT="(Rules could not be loaded - organizational guidelines not available for this review)"
+  echo "No optional project-specific rules found. Proceeding with repository conventions only."
+  RULES_CONTENT="(No optional project-specific rules were provided for this review)"
 fi
 ```
 
@@ -665,7 +654,7 @@ These rules should be included in the Guidelines Checker agent's context.
 
 Launch 5 agents IN PARALLEL using the Task tool with `run_in_background: true`.
 
-**For postgres-ai/platform repository only:** Launch a 6th agent (Sqitch Migration Checker) to verify database migrations.
+**When configured for this repository:** Launch a 6th agent (Sqitch Migration Checker) to verify database migrations.
 
 **IMPORTANT**: Send all Task calls in a SINGLE message to run them in parallel.
 
@@ -837,9 +826,9 @@ You are a code style and guidelines expert. Review this GitLab MR diff for conve
 {CLAUDE_MD_CONTENT or "No CLAUDE.md found"}
 </project_guidelines>
 
-<postgres_ai_rules>
-{RULES_CONTENT - Include all .mdc files from postgres-ai/rules}
-</postgres_ai_rules>
+<project_rules>
+{RULES_CONTENT - Include all optional project-specific .mdc files when present}
+</project_rules>
 
 <mr_info>
 Title: {MR_TITLE}
@@ -867,7 +856,7 @@ FINDING:
 
 Confidence scoring (0-10):
 - **+3**: Clear violation of explicit documented rule
-- **+2**: Violates CLAUDE.md or postgres-ai rules directly
+- **+2**: Violates CLAUDE.md or project rules directly
 - **+2**: Definite violation vs. subjective preference
 - **+2**: Consistent with how the rule is applied elsewhere
 - **+1**: Newly introduced (not pre-existing)
@@ -920,9 +909,9 @@ Only report findings with confidence >= 4.
 If no documentation issues found, output: NO_FINDINGS
 ```
 
-**Agent 6: Sqitch Migration Checker** (model: opus) **[postgres-ai/platform ONLY]**
+**Agent 6: Sqitch Migration Checker** (model: opus) **[configured repositories only]**
 
-Only launch this agent if `PROJECT` is `postgres-ai/platform`:
+Only launch this agent when the repository configuration enables Sqitch migration checks:
 
 ```
 You are a PostgreSQL database migration expert. Verify all database schema changes have Sqitch migrations.
@@ -981,7 +970,7 @@ If no migration issues found, output: NO_FINDINGS
 
 ### Step 5: Collect results
 
-Use TaskOutput to collect results from all agents (5 agents normally, 6 for postgres-ai/platform) (blocking mode).
+Use TaskOutput to collect results from all agents (5 agents normally, 6 when an optional repository-specific agent is enabled) (blocking mode).
 
 **Error handling:**
 - If an agent times out (>2 minutes), note it in the report but continue with other results
@@ -1088,7 +1077,7 @@ Keep count of filtered findings (confidence 0-3) per area for the summary table.
 Format the final report:
 
 ```markdown
-## REV Code Review Report
+## samorev Code Review Report
 
 - **MR:** {PROJECT}!{MR_NUMBER} - {MR_TITLE}
 - **Author:** {AUTHOR}
@@ -1146,7 +1135,7 @@ Issues with moderate confidence (4-7/10). Review manually - may be false positiv
 | Sqitch Migrations* | {COUNT} | {COUNT} | {COUNT} |
 | Metadata | {COUNT} | {COUNT} | {COUNT} |
 
-*Only for postgres-ai/platform repository
+*Only when the optional Sqitch migration checker is enabled for the reviewed repository
 
 Note:
 - **Findings**: High-confidence issues (8-10/10) - blocking or non-blocking per severity
@@ -1165,13 +1154,13 @@ Note:
 > **Action:** {SUGGESTION}
 
 ---
-*REV-assisted review (AI analysis by [postgres-ai/rev](https://gitlab.com/postgres-ai/rev))*
+*samorev-assisted review (AI analysis by [Tanya301/samorev](https://github.com/Tanya301/samorev))*
 ```
 
 **If NO issues found (all counts are 0):**
 
 ```markdown
-## REV Code Review Report
+## samorev Code Review Report
 
 - **MR:** {PROJECT}!{MR_NUMBER} - {MR_TITLE}
 - **Compliance:** {ACTIVE_COMPLIANCE_CHECKS}
@@ -1185,7 +1174,7 @@ No issues found. Reviewed for security, bugs, tests, guidelines, and documentati
 **Result: PASSED**
 
 ---
-*REV-assisted review (AI analysis by [postgres-ai/rev](https://gitlab.com/postgres-ai/rev))*
+*samorev-assisted review (AI analysis by [Tanya301/samorev](https://github.com/Tanya301/samorev))*
 ```
 
 **Section visibility:**

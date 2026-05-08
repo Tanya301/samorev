@@ -2,7 +2,7 @@
 
 You are a PostgreSQL database migration expert. Verify that all database schema changes have corresponding Sqitch migrations.
 
-**ONLY runs for `postgres-ai/platform` repository.**
+**Only runs when enabled for the reviewed repository.**
 
 ## What to Check
 

@@ -1,16 +1,16 @@
-# REV - Automated code review for GitLab
+# samorev - automated code review
 
-REV (Review Engineering Validation) is a Claude Code plugin that automates code review for GitLab Merge Requests using parallel AI agents.
+samorev is a Claude Code plugin that currently supports GitLab Merge Requests via `glab` using parallel AI agents. GitHub Pull Request support is planned and tracked separately.
 
 ## Features
 
 - **Automatic self-update**: Checks for updates before each review (supports standalone repos and submodule installations)
-- **Parallel multi-agent review**: 5 specialized agents analyze code simultaneously (6 for postgres-ai/platform with Sqitch migrations)
-- **GitLab native**: Works with GitLab MRs via `glab` CLI
-- **PostgresAI rules integration**: Enforces organizational coding standards
+- **Parallel multi-agent review**: 5 specialized agents analyze code simultaneously, with optional repository-specific agents
+- **Provider scope**: Supports GitLab MRs via `glab`; GitHub PR support is planned
+- **Optional rules integration**: Loads optional project-specific rules when a repository provides them
 - **Confidence scoring**: Rates each finding 0-10, filtering out likely false positives
 - **Three-tier findings**: Categorizes into blocking, non-blocking, and potential issues
-- **Sqitch migration validation**: Ensures PostgreSQL schema changes have proper migrations (platform repo only)
+- **Sqitch migration validation**: Optionally ensures PostgreSQL schema changes have proper migrations
 
 ## Agents
 
@@ -21,7 +21,7 @@ REV (Review Engineering Validation) is a Claude Code plugin that automates code 
 | Test Analyzer | Sonnet | Coverage, test quality | Configurable | All repos |
 | Guidelines Checker | Sonnet | Project conventions, rules | No | All repos |
 | Docs Reviewer | Sonnet | Documentation, comments | No | All repos |
-| Sqitch Migration Checker | Opus | PostgreSQL migrations (Sqitch) | Yes | platform only |
+| Sqitch Migration Checker | Opus | PostgreSQL migrations (Sqitch) | Yes | Optional |
 
 ## Installation
 
@@ -35,41 +35,38 @@ REV (Review Engineering Validation) is a Claude Code plugin that automates code 
 
 ### Global Installation (recommended)
 
-Install REV globally so `/review-mr` works from any directory:
+Install samorev globally so `/review-mr` works from any directory:
 
 ```bash
 # Clone to Claude Code's config directory
-git clone --recurse-submodules https://gitlab.com/postgres-ai/rev.git ~/.claude/rev
+git clone https://github.com/Tanya301/samorev.git ~/.claude/samorev
 
 # Create symlink for the command
 mkdir -p ~/.claude/commands
-ln -s ~/.claude/rev/.claude/commands/review-mr.md ~/.claude/commands/review-mr.md
+ln -s ~/.claude/samorev/.claude/commands/review-mr.md ~/.claude/commands/review-mr.md
 ```
 
 To update:
 ```bash
-cd ~/.claude/rev && git pull && git submodule update --init --recursive
+cd ~/.claude/samorev && git pull
 ```
 
 ### Project-local Installation
 
-If you prefer to install REV as part of a specific project:
+If you prefer to install samorev as part of a specific project:
 
 ```bash
-# Clone the repo with submodules
-git clone --recurse-submodules https://gitlab.com/postgres-ai/rev.git
-
-# Or if already cloned, initialize submodules
-git submodule update --init --recursive
+# Clone the repo
+git clone https://github.com/Tanya301/samorev.git
 ```
 
-The `/review-mr` command will be available when running Claude Code from within the REV directory or any project that includes REV as a submodule.
+The `/review-mr` command will be available when running Claude Code from within the samorev directory or any project that includes samorev as a submodule.
 
 ## Usage
 
 ```bash
 # Review a GitLab MR by URL
-/review-mr https://gitlab.com/postgres-ai/platform/-/merge_requests/123
+/review-mr https://gitlab.com/example-org/example-repo/-/merge_requests/123
 
 # Review by MR number (uses current repo context)
 /review-mr 123
@@ -81,6 +78,8 @@ The `/review-mr` command will be available when running Claude Code from within 
 /review-mr 123 --blocking
 ```
 
+GitHub PR review support is planned, but this command does not yet fetch, analyze, or post GitHub PR reviews end to end.
+
 **Flags:**
 - `--no-comment` - Output review to terminal only, don't post to MR
 - `--blocking` - Exit with code 1 if BLOCKING issues (CRITICAL/HIGH/MEDIUM) are found
@@ -91,7 +90,7 @@ The `/review-mr` command will be available when running Claude Code from within 
 
 The repository includes a `.claude/settings.json` file that configures safe default permissions for Claude Code:
 
-- **Allowed**: Git, glab, common dev tools (node, python, go, docker, psql, sqitch), file operations, web fetch
+- **Allowed**: Git, gh, glab, common dev tools (node, python, go, docker, psql, sqitch), file operations, web fetch
 - **Denied**: Destructive commands (rm, sudo), network tools that bypass logging (curl, wget), access to secrets (.env*, secrets/**)
 
 ### Per-repository config (`.rev.yml`) - planned feature
@@ -128,8 +127,7 @@ ignore:
         ▼
 ┌───────────────────┐
 │  Self-Update      │
-│  (git pull/       │
-│   submodule update)
+│  (git pull)       │
 └───────────────────┘
         │
         ▼
@@ -154,7 +152,7 @@ ignore:
 │  │ (Opus)  │ │ (Opus)  │ │(Sonnet) │ │ (Sonnet) ││
 │  └─────────┘ └─────────┘ └─────────┘ └──────────┘│
 │  ┌─────────┐          ┌─────────────────────────┐ │
-│  │  Docs   │          │ Sqitch (platform only)  │ │
+│  │  Docs   │          │ Sqitch (optional)       │ │
 │  │(Sonnet) │          │        (Opus)           │ │
 │  └─────────┘          └─────────────────────────┘ │
 └───────────────────────────────────────────────────┘
@@ -169,15 +167,15 @@ ignore:
 ## Review output
 
 ```markdown
-## REV Code Review Report
+## samorev Code Review Report
 
-- **MR:** postgres-ai/platform!123 - Add user authentication
+- **MR:** example-org/example-repo!123 - Add user authentication
 - **Author:** @developer
 - **AI-Assisted:** No
 
 | Pipeline | Coverage |
 |----------|----------|
-| [![pipeline](https://gitlab.com/postgres-ai/platform/badges/feat/auth/pipeline.svg)](link) | [![coverage](https://gitlab.com/postgres-ai/platform/badges/feat/auth/coverage.svg)](link) |
+| [![pipeline](https://gitlab.com/example-org/example-repo/badges/feat/auth/pipeline.svg)](link) | [![coverage](https://gitlab.com/example-org/example-repo/badges/feat/auth/coverage.svg)](link) |
 
 ---
 
@@ -221,7 +219,7 @@ Issues with moderate confidence (4-7/10). Review manually - may be false positiv
 | Sqitch Migrations* | 0 | 0 | 0 |
 | Metadata | 0 | 0 | 0 |
 
-*Only for postgres-ai/platform repository
+*Only when the optional Sqitch migration checker is enabled for the reviewed repository
 
 Note:
 - **Findings**: High-confidence issues (8-10/10) - blocking or non-blocking per severity
@@ -235,12 +233,12 @@ Note:
 All SOC2 checks passed.
 
 ---
-*REV-assisted review (AI analysis by [postgres-ai/rev](https://gitlab.com/postgres-ai/rev))*
+*samorev-assisted review (AI analysis by [Tanya301/samorev](https://github.com/Tanya301/samorev))*
 ```
 
 ## Testing Framework
 
-REV includes a testing framework to validate agent quality and catch regressions.
+samorev includes a testing framework to validate agent quality and catch regressions.
 
 ### Running Tests
 
@@ -316,7 +314,7 @@ Agents are held to minimum quality standards:
 
 ### CI Pipeline
 
-The GitLab CI pipeline runs:
+The CI pipeline runs:
 1. **lint** - Markdown and Python linting
 2. **test** - Unit tests and integration tests
 3. **quality-gate** - Verify metrics meet thresholds
@@ -326,7 +324,7 @@ The GitLab CI pipeline runs:
 ### Project structure
 
 ```
-rev/
+samorev/
 ├── .claude/
 │   ├── commands/
 │   │   └── review-mr.md     # Main review command (slash command)
@@ -338,8 +336,8 @@ rev/
 │   ├── test-analyzer.md          # Coverage, test quality
 │   ├── guidelines-checker.md     # Project conventions
 │   ├── docs-reviewer.md          # Documentation review
-│   └── sqitch-migration-checker.md # Sqitch migrations (platform only)
-├── rules/                    # Submodule: postgres-ai/rules
+│   └── sqitch-migration-checker.md # Optional Sqitch migrations
+├── rules/                    # Optional project-specific and shared rules
 ├── tests/                    # Testing framework
 │   ├── conftest.py          # Pytest configuration
 │   ├── test_agents.py       # Agent tests
@@ -356,9 +354,9 @@ rev/
    - Add conditional logic to only run for specific projects
    - Document the scope in the agent file and README
 
-## Integration with PostgresAI rules
+## Optional project rules
 
-REV automatically fetches rules from https://gitlab.com/postgres-ai/rules and includes them in the Guidelines Checker agent. Rules cover:
+samorev can load optional project-specific rules from the `rules/` directory and include them in the Guidelines Checker agent. Rules can cover:
 
 - Git commit standards (Conventional Commits)
 - SQL style guide
@@ -371,10 +369,10 @@ REV automatically fetches rules from https://gitlab.com/postgres-ai/rules and in
 
 ## License
 
-MIT
+Apache License 2.0
 
 ## Links
 
-- **Issue Tracker**: https://gitlab.com/postgres-ai/internal/-/issues/183
-- **PostgresAI Rules**: https://gitlab.com/postgres-ai/rules
+- **Issue Tracker**: https://github.com/Tanya301/samorev/issues
+- **Source history**: seeded from https://gitlab.com/postgres-ai/rev
 - **Claude Code**: https://claude.ai/claude-code
