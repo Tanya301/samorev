@@ -26,14 +26,12 @@ def test_readme_describes_general_purpose_review_tool():
 def test_slash_command_description_is_provider_neutral():
     command = read_repo_file(".claude/commands/review-mr.md")
 
-    assert "description: Review a GitLab MR using parallel AI agents" in command
-    assert "# Review GitLab MR" in command
-    assert "GitHub PR support is planned" in command
-    assert "Default behavior:** Reviews are automatically posted as a comment with `glab`" in command
-    assert "provider CLI (`gh` or `glab`)" not in command
-    assert "https://github.com/example-org/example-repo/pull/123" not in command
+    assert "description: Review a GitHub PR or GitLab MR using parallel AI agents" in command
+    assert "# Review GitHub PR or GitLab MR" in command
+    assert "GitHub PR support is planned" not in command
+    assert "Default behavior:** Reviews are automatically posted as a comment when the provider CLI (`gh` or `glab`) is authenticated." in command
+    assert "https://github.com/example-org/example-repo/pull/123" in command
     assert "postgres-ai/rev" not in command
-    assert "postgres-ai/platform" not in command
     assert "Load optional project-specific rules" in command
 
 

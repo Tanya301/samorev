@@ -14,6 +14,8 @@ ReviewKind = Literal["pr", "mr"]
 
 _PATH_PART = r"[a-zA-Z0-9_.-]+"
 _PROJECT_PATH = rf"(?:{_PATH_PART}/)+{_PATH_PART}"
+_RUNTIME_VARIABLES = frozenset({"RUN_ID", "JOB_ID", "PIPELINE_ID", "REPORT"})
+_RUNTIME_VARIABLE_PATTERN = re.compile(r"\$(RUN_ID|JOB_ID|PIPELINE_ID|REPORT)\b")
 
 
 @dataclass(frozen=True)
@@ -192,11 +194,44 @@ def to_shell_exports(reference: ReviewReference, plan: FetchPlan) -> str:
         "COMMENTS_COMMAND": shlex.join(plan.comments_command),
         "COMMITS_COMMAND": shlex.join(plan.commits_command),
         "CI_COMMAND": shlex.join(plan.ci_command),
-        "FAILED_JOBS_COMMAND": shlex.join(plan.failed_jobs_command),
-        "FAILED_JOB_LOG_COMMAND": shlex.join(plan.failed_job_log_command),
-        "POST_COMMENT_COMMAND": shlex.join(plan.post_comment_command),
+        "FAILED_JOBS_COMMAND": _shell_join_with_runtime_variables(plan.failed_jobs_command),
+        "FAILED_JOB_LOG_COMMAND": _shell_join_with_runtime_variables(plan.failed_job_log_command),
+        "POST_COMMENT_COMMAND": _shell_join_with_runtime_variables(plan.post_comment_command),
     }
     return "\n".join(f"{key}={shlex.quote(value)}" for key, value in values.items())
+
+
+def _shell_join_with_runtime_variables(command: tuple[str, ...]) -> str:
+    """Render a command while preserving approved runtime shell variables.
+
+    Most generated commands are fully static and safe to render with
+    ``shlex.join``. Failed-job log retrieval and GitLab comment posting are
+    different: the command script binds run/job/report values at runtime, then
+    evaluates the generated command string. Render only the approved variables
+    as quoted shell expansions so values with spaces remain one argument.
+    """
+    return " ".join(_quote_shell_word_with_runtime_variables(arg) for arg in command)
+
+
+def _quote_shell_word_with_runtime_variables(value: str) -> str:
+    if not _RUNTIME_VARIABLE_PATTERN.search(value):
+        return shlex.quote(value)
+
+    rendered = []
+    position = 0
+    for match in _RUNTIME_VARIABLE_PATTERN.finditer(value):
+        rendered.append(_double_quote_literal(value[position : match.start()]))
+        variable = match.group(1)
+        if variable not in _RUNTIME_VARIABLES:
+            raise ReviewReferenceError(f"Unsupported runtime variable: {variable}")
+        rendered.append(f"${{{variable}}}")
+        position = match.end()
+    rendered.append(_double_quote_literal(value[position:]))
+    return f'"{"".join(rendered)}"'
+
+
+def _double_quote_literal(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`").replace("$", "\\$")
 
 
 def _build_gitlab_reference(project_path: str, number: str) -> ReviewReference:

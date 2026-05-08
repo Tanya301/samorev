@@ -1,6 +1,7 @@
 """Tests for provider detection and fetch planning."""
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -137,3 +138,75 @@ def test_shell_exports_include_end_to_end_provider_operations():
     assert "FAILED_JOBS_COMMAND=" in exports
     assert "FAILED_JOB_LOG_COMMAND=" in exports
     assert "POST_COMMENT_COMMAND=" in exports
+
+
+def test_github_failed_log_commands_expand_runtime_ids_after_eval():
+    reference = parse_review_reference("https://github.com/example-org/example-repo/pull/17")
+    exports = to_shell_exports(reference, plan_fetch(reference))
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            exports
+            + r'''
+gh() {
+  printf 'gh'
+  for arg in "$@"; do
+    printf ' [%s]' "$arg"
+  done
+  printf '\n'
+}
+RUN_ID=12345
+JOB_ID=67890
+eval "$FAILED_JOBS_COMMAND"
+eval "$FAILED_JOB_LOG_COMMAND"
+''',
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "[12345]" in result.stdout
+    assert "[67890]" in result.stdout
+    assert "[$RUN_ID]" not in result.stdout
+    assert "[$JOB_ID]" not in result.stdout
+
+
+def test_gitlab_failed_log_and_post_commands_expand_runtime_values_after_eval():
+    reference = parse_review_reference("https://gitlab.com/postgres-ai/platform/-/merge_requests/123")
+    exports = to_shell_exports(reference, plan_fetch(reference))
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            exports
+            + r'''
+glab() {
+  printf 'glab'
+  for arg in "$@"; do
+    printf ' [%s]' "$arg"
+  done
+  printf '\n'
+}
+PIPELINE_ID=12345
+JOB_ID=67890
+REPORT='hello report'
+eval "$FAILED_JOBS_COMMAND"
+eval "$FAILED_JOB_LOG_COMMAND"
+eval "$POST_COMMENT_COMMAND"
+''',
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "[projects/postgres-ai%2Fplatform/pipelines/12345/jobs]" in result.stdout
+    assert "[projects/postgres-ai%2Fplatform/jobs/67890/trace]" in result.stdout
+    assert "[hello report]" in result.stdout
+    assert "[$PIPELINE_ID]" not in result.stdout
+    assert "[$JOB_ID]" not in result.stdout
+    assert "[$REPORT]" not in result.stdout

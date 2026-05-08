@@ -15,7 +15,7 @@ Review a GitHub Pull Request or GitLab Merge Request using parallel AI agents fo
 ```
 
 **Examples:**
-- `/review-mr https://gitlab.com/postgres-ai/platform/-/merge_requests/123`
+- `/review-mr https://gitlab.com/example-org/example-repo/-/merge_requests/123`
 - `/review-mr https://github.com/example-org/example-repo/pull/123`
 - `/review-mr 123` (uses current repo context)
 - `/review-mr 123 --no-comment` (only output to terminal, don't post to MR)
@@ -28,21 +28,19 @@ You are a code review orchestrator. Follow these steps:
 
 ### Step 0: Self-update check
 
-Before starting the review, run this script to pull the latest REV version. This ensures you're using the most recent review logic.
+Before starting the review, run this script to pull the latest samorev version. This ensures you're using the most recent review logic.
 
 ```bash
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-if [[ "$(git remote get-url origin 2>/dev/null)" == *"postgres-ai/rev"* ]]; then
-  # Running from REV repo itself
+if [[ "$(git remote get-url origin 2>/dev/null)" == *"samorev"* ]]; then
+  # Running from samorev repo itself
   git pull --quiet origin main 2>/dev/null
-  git submodule update --init --recursive --quiet 2>/dev/null
 elif [[ -d "$REPO_ROOT/rev/.git" ]] || [[ -f "$REPO_ROOT/rev/.git" ]]; then
-  # REV is a subdirectory (clone or submodule)
+  # samorev is a subdirectory (clone or submodule)
   cd "$REPO_ROOT/rev"
-  if [[ "$(git remote get-url origin 2>/dev/null)" == *"postgres-ai/rev"* ]]; then
+  if [[ "$(git remote get-url origin 2>/dev/null)" == *"samorev"* ]]; then
     [[ -f .git ]] && cd "$REPO_ROOT" && git submodule update --remote --quiet rev 2>/dev/null && cd "$REPO_ROOT/rev"
     [[ -d .git ]] && git pull --quiet origin main 2>/dev/null
-    git submodule update --init --recursive --quiet 2>/dev/null
   fi
   cd "$REPO_ROOT"
 fi
@@ -83,6 +81,8 @@ if ! PLAN_OUTPUT=$(python3 "$PLAN_SCRIPT" "$MR_REF" --remote-url "$REMOTE_URL" -
 fi
 
 # Safe to eval: provider_planning.py emits quoted shell assignments after strict validation.
+# Commands that require runtime values use quoted variable expansions such as
+# "${RUN_ID}", so bind those variables before evaluating the command string.
 eval "$PLAN_OUTPUT"
 ```
 
@@ -119,13 +119,13 @@ Check if MR should be skipped:
 # comments operation from provider_planning.py.
 if [ "$REVIEW_PROVIDER" = "github" ]; then
   LAST_REVIEW_TIME=$(eval "$COMMENTS_COMMAND" 2>/dev/null | \
-    jq -r '.[] | select(.body | test("REV Code Review Report|REV-assisted review")) | .created_at' | \
+    jq -r '.[] | select(.body | test("samorev Code Review Report|REV Code Review Report|samorev-assisted review|REV-assisted review")) | .created_at' | \
     head -1 | \
     grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' | tr 'T' ' ')
 else
   # Fetch only the 10 most recent notes (sorted desc) to avoid loading massive histories.
   LAST_REVIEW_TIME=$(eval "$COMMENTS_COMMAND" 2>/dev/null | \
-    jq -r '.[] | select(.body | test("REV Code Review Report|REV-assisted review")) | .created_at' | \
+    jq -r '.[] | select(.body | test("samorev Code Review Report|REV Code Review Report|samorev-assisted review|REV-assisted review")) | .created_at' | \
     head -1 | \
     grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' | tr 'T' ' ')
 fi
@@ -290,101 +290,53 @@ Where STATUS_EMOJI is:
 > **Fix:** Review failed jobs and fix errors before merge
 ```
 
-### Step 2.5: SOC2 compliance checks (BLOCKING)
+### Step 2.5: Compliance mode detection
 
-**These checks are BLOCKING for SOC2 compliance (CC6.1, CC8.1).**
+Compliance checks are config-driven. Detect the active mode from REV config and
+default safely to `none` when no repo config exists; do not require operators to
+pass a "no SOC2" flag for ordinary repos.
 
-Run the following checks and include results in the report:
+Supported config examples:
+
+```yaml
+compliance: soc2
+```
+
+```yaml
+compliance:
+  mode: soc2
+```
+
+```yaml
+compliance_mode: iso27001
+```
+
+Use `lib/compliance.py` as the source of truth:
 
 ```bash
-# Reuse provider metadata JSON
-MR_JSON=$(eval "$METADATA_COMMAND")
+COMPLIANCE_REPORT=$(python3 - <<'PY'
+import json
+import os
+import sys
 
-# Extract fields
-if [ "$REVIEW_PROVIDER" = "github" ]; then
-  REVIEWERS=$(echo "$MR_JSON" | jq -r '.reviewRequests // [] | .[].login? // empty')
-  ASSIGNEES=$(echo "$MR_JSON" | jq -r '.assignees // [] | .[].login? // empty')
-  AUTHOR=$(echo "$MR_JSON" | jq -r '.author.login')
-  DESCRIPTION=$(echo "$MR_JSON" | jq -r '.body // ""')
-  LABELS=$(echo "$MR_JSON" | jq -r '.labels // [] | .[].name? // empty')
-else
-  REVIEWERS=$(echo "$MR_JSON" | jq -r '.reviewers // [] | .[].username | select(. != null)')
-  ASSIGNEES=$(echo "$MR_JSON" | jq -r '.assignees // [] | .[].username | select(. != null)')
-  AUTHOR=$(echo "$MR_JSON" | jq -r '.author.username')
-  DESCRIPTION=$(echo "$MR_JSON" | jq -r '.description // ""')
-  LABELS=$(echo "$MR_JSON" | jq -r '.labels // [] | .[]')
-fi
+repo_root = os.environ.get("REPO_ROOT", ".")
+sys.path.insert(0, os.path.join(repo_root, "lib"))
+
+from compliance import render_compliance_report
+
+mr_data = json.loads(os.environ["MR_JSON"])
+print(render_compliance_report(repo_root, mr_data).markdown)
+PY
+)
 ```
 
-**SOC2 compliance checklist:**
+Always include the first line of `COMPLIANCE_REPORT` in the final report, for
+example `Active compliance checks: none` or `Active compliance checks: SOC2`.
 
-| Check | Requirement | How to Verify |
-|-------|-------------|---------------|
-| **Linked Issue** | MR must reference an issue | Description contains `#123`, `Closes #123`, or issue URL |
-| **Assigned Reviewer** | MR must have at least one reviewer who is NOT the author | `reviewers` array is non-empty and doesn't include author |
-| **Author != Merger** | Different person must merge (enforced by GitLab settings) | Informational only - GitLab enforces this |
-| **Description Quality** | MR must have meaningful description | Description is >50 chars and not just template placeholders |
-
-```python
-def check_soc2_compliance(mr_data: dict) -> list[dict]:
-    """Check MR for SOC2 compliance issues.
-
-    Returns list of compliance findings (blocking if severity is HIGH/CRITICAL).
-    """
-    findings = []
-    author = mr_data.get('author', {}).get('username', '')
-    reviewers = [r.get('username') for r in mr_data.get('reviewers', [])]
-    description = mr_data.get('description', '') or ''
-
-    # Check 1: Linked Issue
-    # Use word boundaries to avoid false positives from code comments, CSS IDs, etc.
-    issue_patterns = [
-        r'(?<!\w)#\d+(?!\w)',              # #123 (with word boundaries)
-        r'[Cc]loses?\s+#\d+',              # Closes #123
-        r'[Ff]ixes?\s+#\d+',               # Fixes #123
-        r'[Rr]esolves?\s+#\d+',            # Resolves #123
-        r'gitlab\.com/.+/-/issues/\d+',    # Full issue URL
-    ]
-    has_issue_link = any(re.search(p, description) for p in issue_patterns)
-    if not has_issue_link:
-        findings.append({
-            'check': 'SOC2: Linked Issue',
-            'severity': 'HIGH',
-            'issue': 'MR has no linked issue',
-            'suggestion': 'Add issue reference (e.g., "Closes #123") to description',
-            'soc2_ref': 'CC8.1 - Change Management'
-        })
-
-    # Check 2: Assigned Reviewer (not author)
-    valid_reviewers = [r for r in reviewers if r != author]
-    if not valid_reviewers:
-        findings.append({
-            'check': 'SOC2: Code Review',
-            'severity': 'HIGH',
-            'issue': 'MR has no assigned reviewer (or reviewer is author)',
-            'suggestion': f'Assign a reviewer other than @{author}',
-            'soc2_ref': 'CC6.1 - Logical Access Controls'
-        })
-
-    # Check 3: Description Quality
-    # Remove common template placeholders (only header-only lines, not content after headers)
-    clean_desc = re.sub(r'^##\s*(Summary|Description|Changes|TODO)\s*$', '', description, flags=re.MULTILINE)
-    clean_desc = re.sub(r'\[.*?\]\(.*?\)', '', clean_desc)  # Remove markdown links
-    clean_desc = clean_desc.strip()
-
-    if len(clean_desc) < 50:
-        findings.append({
-            'check': 'SOC2: Change Documentation',
-            'severity': 'MEDIUM',
-            'issue': 'MR description is too brief or empty',
-            'suggestion': 'Add detailed description explaining what changes and why',
-            'soc2_ref': 'CC8.1 - Change Management'
-        })
-
-    return findings
-```
-
-**Report these in a separate "SOC2 COMPLIANCE" section of the review.**
+Only when the detected mode is `soc2`, include the `SOC2 COMPLIANCE` section
+from `COMPLIANCE_REPORT`. SOC2 checks cover linked issue, assigned reviewer who
+is not the author, and meaningful change description. Future named modes are
+reported as active but do not emit SOC2 sections until built-in checks exist.
 
 ### Step 2.6: MR metadata quality analysis
 
@@ -683,7 +635,7 @@ Use it to build `PRIOR_CONTEXT`:
 ```bash
 if [ "$REVIEW_PROVIDER" = "github" ]; then
   PRIOR_CONTEXT=$(eval "$COMMENTS_COMMAND" 2>/dev/null | jq -r '
-    def interesting: (.body | test("REV Code Review Report|REV-assisted review"));
+    def interesting: (.body | test("samorev Code Review Report|REV Code Review Report|samorev-assisted review|REV-assisted review"));
     "<prior_reviews>",
     ([.[] | select(interesting) | "- " + (.created_at // "") + " by " + (.user.login // "unknown") + ": " + ((.body // "") | gsub("\n"; " ") | .[0:500])] | .[]),
     "</prior_reviews>",
@@ -713,16 +665,16 @@ If `PRIOR_CONTEXT` is empty, this is effectively the first review, so proceed no
 3. Identify languages in changed files (from diff headers)
 4. Check commit messages for AI-assisted indicators (look for "Claude", "AI", "Generated")
 5. Build `PRIOR_CONTEXT` using `lib/review_memory.py`
-6. **Load postgres-ai rules** from the `rules/` submodule (included in this repo)
+6. **Load optional project-specific rules** when present in the repository
 
 To load rules:
 ```bash
-# Rules are included as a git submodule at ./rules
+# Optional rules can be provided at ./rules/rules
 # The path is relative to the repo root where /review-mr is invoked
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
 if [ "$REVIEW_PROVIDER" = "github" ]; then
   PRIOR_CONTEXT=$(eval "$COMMENTS_COMMAND" 2>/dev/null | jq -r '
-    def interesting: (.body | test("REV Code Review Report|REV-assisted review"));
+    def interesting: (.body | test("samorev Code Review Report|REV Code Review Report|samorev-assisted review|REV-assisted review"));
     "<prior_reviews>",
     ([.[] | select(interesting) | "- " + (.created_at // "") + " by " + (.user.login // "unknown") + ": " + ((.body // "") | gsub("\n"; " ") | .[0:500])] | .[]),
     "</prior_reviews>",
@@ -745,21 +697,10 @@ if [ -d "$REPO_ROOT/rules/rules" ]; then
   fi
 fi
 
-# Fallback: fetch from GitLab API if submodule not initialized or empty
-if [ "$RULES_LOADED" = false ]; then
-  RULES_CONTENT=$(glab api projects/postgres-ai%2Frules/repository/tree --paginate -F path=rules 2>/dev/null | \
-    jq -r '.[].name' 2>/dev/null | while read f; do
-      glab api "projects/postgres-ai%2Frules/repository/files/rules%2F$f/raw" --paginate 2>/dev/null
-    done)
-  if [ -n "$RULES_CONTENT" ]; then
-    RULES_LOADED=true
-  fi
-fi
-
 # If rules still not loaded, proceed without them but note in report
 if [ "$RULES_LOADED" = false ]; then
-  echo "WARNING: Could not load postgres-ai rules. Proceeding without organizational guidelines."
-  RULES_CONTENT="(Rules could not be loaded - organizational guidelines not available for this review)"
+  echo "No optional project-specific rules found. Proceeding with repository conventions only."
+  RULES_CONTENT="(No optional project-specific rules were provided for this review)"
 fi
 ```
 
@@ -769,7 +710,7 @@ These rules should be included in the Guidelines Checker agent's context.
 
 Launch 5 agents IN PARALLEL using the Task tool with `run_in_background: true`.
 
-**For postgres-ai/platform repository only:** Launch a 6th agent (Sqitch Migration Checker) to verify database migrations.
+**When configured for this repository:** Launch a 6th agent (Sqitch Migration Checker) to verify database migrations.
 
 **IMPORTANT**: Send all Task calls in a SINGLE message to run them in parallel.
 
@@ -941,9 +882,9 @@ You are a code style and guidelines expert. Review this PR/MR diff for conventio
 {CLAUDE_MD_CONTENT or "No CLAUDE.md found"}
 </project_guidelines>
 
-<postgres_ai_rules>
-{RULES_CONTENT - Include all .mdc files from postgres-ai/rules}
-</postgres_ai_rules>
+<project_specific_rules>
+{RULES_CONTENT - Include optional project-specific rule files}
+</project_specific_rules>
 
 <mr_info>
 Title: {MR_TITLE}
@@ -971,7 +912,7 @@ FINDING:
 
 Confidence scoring (0-10):
 - **+3**: Clear violation of explicit documented rule
-- **+2**: Violates CLAUDE.md or postgres-ai rules directly
+- **+2**: Violates CLAUDE.md or project-specific rules directly
 - **+2**: Definite violation vs. subjective preference
 - **+2**: Consistent with how the rule is applied elsewhere
 - **+1**: Newly introduced (not pre-existing)
@@ -1024,9 +965,9 @@ Only report findings with confidence >= 4.
 If no documentation issues found, output: NO_FINDINGS
 ```
 
-**Agent 6: Sqitch Migration Checker** (model: opus) **[postgres-ai/platform ONLY]**
+**Agent 6: Sqitch Migration Checker** (model: opus) **[repository-specific migration checks only]**
 
-Only launch this agent if `PROJECT` is `postgres-ai/platform`:
+Only launch this agent when repository-specific migration checks are enabled:
 
 ```
 You are a PostgreSQL database migration expert. Verify all database schema changes have Sqitch migrations.
@@ -1085,7 +1026,7 @@ If no migration issues found, output: NO_FINDINGS
 
 ### Step 5: Collect results
 
-Use TaskOutput to collect results from all agents (5 agents normally, 6 for postgres-ai/platform) (blocking mode).
+Use TaskOutput to collect results from all agents (5 agents normally, 6 when repository-specific migration checks are enabled) (blocking mode).
 
 **Error handling:**
 - If an agent times out (>2 minutes), note it in the report but continue with other results
@@ -1192,7 +1133,7 @@ Keep count of filtered findings (confidence 0-3) per area for the summary table.
 Format the final report:
 
 ```markdown
-## REV Code Review Report
+## samorev Code Review Report
 
 - **MR:** {PROJECT}!{MR_NUMBER} - {MR_TITLE}
 - **Author:** {AUTHOR}
@@ -1249,7 +1190,7 @@ Issues with moderate confidence (4-7/10). Review manually - may be false positiv
 | Sqitch Migrations* | {COUNT} | {COUNT} | {COUNT} |
 | Metadata | {COUNT} | {COUNT} | {COUNT} |
 
-*Only for postgres-ai/platform repository
+*Only when repository-specific migration checks are enabled
 
 Note:
 - **Findings**: High-confidence issues (8-10/10) - blocking or non-blocking per severity
@@ -1266,13 +1207,13 @@ Note:
 > **Action:** {SUGGESTION}
 
 ---
-*REV-assisted review (AI analysis by [postgres-ai/rev](https://gitlab.com/postgres-ai/rev))*
+*samorev-assisted review (AI analysis by [Tanya301/samorev](https://github.com/Tanya301/samorev))*
 ```
 
 **If NO issues found (all counts are 0):**
 
 ```markdown
-## REV Code Review Report
+## samorev Code Review Report
 
 - **MR:** {PROJECT}!{MR_NUMBER} - {MR_TITLE}
 
@@ -1285,7 +1226,7 @@ No issues found. Reviewed for security, bugs, tests, guidelines, and documentati
 **Result: PASSED**
 
 ---
-*REV-assisted review (AI analysis by [postgres-ai/rev](https://gitlab.com/postgres-ai/rev))*
+*samorev-assisted review (AI analysis by [Tanya301/samorev](https://github.com/Tanya301/samorev))*
 ```
 
 **Section visibility:**
