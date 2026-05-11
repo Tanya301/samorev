@@ -253,6 +253,6 @@ def test_readme_documents_cli_first_review_interface():
     assert "CLI-first" in readme
     assert "samorev review <PR-or-MR> --no-comment --blocking" in readme
     assert "samorev review <PR-or-MR> --no-comment --fetch" in readme
-    assert "samorev review https://github.com/example-org/example-repo/pull/123 --no-comment --blocking" in readme
-    assert "samorev review https://gitlab.com/example-org/example-repo/-/merge_requests/123 --no-comment" in readme
+    assert "bun run samorev review https://github.com/example-org/example-repo/pull/123 --no-comment --blocking" in readme
+    assert "bun run samorev review https://gitlab.com/example-org/example-repo/-/merge_requests/123 --no-comment" in readme
     assert "thin wrapper" in readme

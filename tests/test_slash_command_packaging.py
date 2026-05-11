@@ -157,8 +157,11 @@ def test_github_actions_runs_tests_and_slash_command_smoke():
     assert "pull_request:" in workflow
     assert "push:" in workflow
     assert "python-version: '3.11'" in workflow
+    assert "oven-sh/setup-bun@v2" in workflow
+    assert "bun install" in workflow
+    assert "bun test" in workflow
+    assert "bun run build" in workflow
     assert "python -m pytest tests/ -m 'not api' -q" in workflow
     assert "bash scripts/install-claude-command.sh" in workflow
-    assert "python -m pip install -e ." in workflow
-    assert "samorev review https://github.com/example-org/example-repo/pull/17 --no-comment --blocking --smoke" in workflow
+    assert "bun run samorev review https://github.com/example-org/example-repo/pull/17 --no-comment --blocking --smoke" in workflow
     assert "python lib/provider_planning.py https://github.com/example-org/example-repo/pull/17 --shell" in workflow

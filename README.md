@@ -45,36 +45,41 @@ Install from a checkout while the package is pre-release:
 ```bash
 git clone https://github.com/Tanya301/samorev.git
 cd samorev
-python -m pip install -e .
+bun install
+bun run build
 ```
+
+The checkout command for agents is `bun run samorev ...`. `bun run build` also writes the installable bin target at `dist/cli.js`.
+
+See [SPEC.md](SPEC.md) for the concise CLI contract, provider behavior, evidence standards, and acceptance criteria.
 
 Primary CLI target for LLM-run reviews:
 
 ```bash
-samorev review <PR-or-MR> --no-comment --blocking
+bun run samorev review <PR-or-MR> --no-comment --blocking
 ```
 
 Fetch provider data and print an inline demo/report summary:
 
 ```bash
-samorev review <PR-or-MR> --no-comment --fetch
+bun run samorev review <PR-or-MR> --no-comment --fetch
 ```
 
 Examples:
 
 ```bash
-samorev review https://github.com/example-org/example-repo/pull/123 --no-comment --blocking
-samorev review https://github.com/example-org/example-repo/pull/123 --no-comment --fetch
-samorev review https://gitlab.com/example-org/example-repo/-/merge_requests/123 --no-comment
-samorev review 123 --remote-url git@github.com:example-org/example-repo.git --no-comment --blocking
+bun run samorev review https://github.com/example-org/example-repo/pull/123 --no-comment --blocking
+bun run samorev review https://github.com/example-org/example-repo/pull/123 --no-comment --fetch
+bun run samorev review https://gitlab.com/example-org/example-repo/-/merge_requests/123 --no-comment
+bun run samorev review 123 --remote-url git@github.com:example-org/example-repo.git --no-comment --blocking
 ```
 
-`--fetch` executes the provider metadata, diff, comments, commits, and CI fetches itself, then prints an LLM-readable summary with title/state/draft status, diff size, comment count, commit count, CI summary, and `live_posting=not-run`. GitHub uses `gh`. GitLab uses `glab` when available and falls back to GitLab's public API for public merge requests.
+The Bun/TypeScript CLI is the primary interface for LLM agents. `--fetch` executes the provider metadata, diff, comments, commits, and CI fetches itself, then prints an LLM-readable summary with title/state/draft status, diff size, comment count, commit count, CI summary, and `live_posting=not-run`. GitHub uses `gh`. GitLab uses `glab` when available and falls back to GitLab's public API for public merge requests.
 
 Use `--smoke` to verify provider planning and prompt wiring without running agents or posting:
 
 ```bash
-samorev review https://github.com/example-org/example-repo/pull/123 --no-comment --blocking --smoke
+bun run samorev review https://github.com/example-org/example-repo/pull/123 --no-comment --blocking --smoke
 ```
 
 Live provider posting from the CLI is intentionally disabled until it is reviewed and tested. Use `--no-comment` for LLM-run reviews in this release.

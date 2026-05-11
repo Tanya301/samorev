@@ -1,0 +1,18 @@
+{
+  "name": "samorev",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "bin": {
+    "samorev": "./dist/cli.js"
+  },
+  "scripts": {
+    "samorev": "bun src/cli.ts",
+    "test": "bun test",
+    "build": "tsc --noEmit && bun build src/cli.ts --target bun --outfile dist/cli.js"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.3"
+  }
+}
