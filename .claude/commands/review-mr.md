@@ -58,6 +58,39 @@ Extract and **validate** the project path, provider, review kind, and review num
 **Security: Always validate inputs to prevent command injection!**
 
 ```bash
+RAW_ARGS="${ARGUMENTS:-}"
+MR_REF=""
+NO_COMMENT=false
+BLOCKING_MODE=false
+
+for arg in $RAW_ARGS; do
+  case "$arg" in
+    --no-comment)
+      NO_COMMENT=true
+      ;;
+    --blocking)
+      BLOCKING_MODE=true
+      ;;
+    -*)
+      echo "Error: unknown option $arg"
+      exit 1
+      ;;
+    *)
+      if [ -z "$MR_REF" ]; then
+        MR_REF="$arg"
+      else
+        echo "Error: unexpected extra argument $arg"
+        exit 1
+      fi
+      ;;
+  esac
+done
+
+if [ -z "$MR_REF" ]; then
+  echo "Error: missing PR/MR URL or number"
+  exit 1
+fi
+
 REMOTE_URL=$(git remote get-url origin 2>/dev/null || true)
 PLAN_SCRIPT=""
 for candidate in \
@@ -99,14 +132,38 @@ MR_JSON=$(eval "$METADATA_COMMAND")
 if [ "$REVIEW_PROVIDER" = "github" ]; then
   SOURCE_BRANCH=$(echo "$MR_JSON" | jq -r '.headRefName')
   AUTHOR=$(echo "$MR_JSON" | jq -r '.author.login')
+  MR_DESCRIPTION=$(echo "$MR_JSON" | jq -r '.body // ""')
+  MR_STATE=$(echo "$MR_JSON" | jq -r '.state // "unknown"')
+  IS_DRAFT=$(echo "$MR_JSON" | jq -r '.isDraft // false')
+  REVIEW_LABEL="PR"
 else
   SOURCE_BRANCH=$(echo "$MR_JSON" | jq -r '.source_branch')
   AUTHOR=$(echo "$MR_JSON" | jq -r '.author.username')
+  MR_DESCRIPTION=$(echo "$MR_JSON" | jq -r '.description // ""')
+  MR_STATE=$(echo "$MR_JSON" | jq -r '.state // "unknown"')
+  IS_DRAFT=$(echo "$MR_JSON" | jq -r '.draft // .work_in_progress // false')
+  REVIEW_LABEL="MR"
 fi
 MR_TITLE=$(echo "$MR_JSON" | jq -r '.title')
 
 # Get the diff
-eval "$DIFF_COMMAND"
+DIFF_CONTENT=$(eval "$DIFF_COMMAND")
+
+if [ "$MR_STATE" != "OPEN" ] && [ "$MR_STATE" != "opened" ]; then
+  echo "$REVIEW_LABEL is not open ($MR_STATE), skipping review"
+  exit 0
+fi
+
+if [ "$IS_DRAFT" = "true" ]; then
+  echo "Draft $REVIEW_LABEL, skipping review"
+  exit 0
+fi
+
+DIFF_LINE_COUNT=$(printf '%s\n' "$DIFF_CONTENT" | wc -l | tr -d ' ')
+if [ "$DIFF_LINE_COUNT" -lt 10 ]; then
+  echo "Diff is trivial ($DIFF_LINE_COUNT lines), skipping review"
+  exit 0
+fi
 ```
 
 Check if MR should be skipped:
@@ -1306,7 +1363,9 @@ def verify_report_safe(report: str) -> tuple[bool, list[str]]:
 
 **Option A: Summary comment only**
 ```bash
-if [ "$REVIEW_PROVIDER" = "github" ]; then
+if [ "$NO_COMMENT" = true ]; then
+  echo "$REPORT"
+elif [ "$REVIEW_PROVIDER" = "github" ]; then
   # GitHub provider uses: gh pr comment <number> --repo <owner/repo> --body-file -
   printf '%s' "$REPORT" | eval "$POST_COMMENT_COMMAND"
 else
@@ -1392,7 +1451,7 @@ The Python subprocess approach with list arguments is secure because it avoids s
 
 ### Step 9: Exit status
 
-- If BLOCKING issues found: Exit with code 1 (for CI integration)
+- If BLOCKING_MODE is true and blocking issues are found: Exit with code 1 (for CI integration)
 - If only NON-BLOCKING issues: Exit with code 0
 - Output summary to terminal regardless of --comment flag
 

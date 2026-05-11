@@ -86,6 +86,8 @@ The `/review-mr` command will be available when running Claude Code from within 
 /review-mr 123 --blocking
 ```
 
+GitHub PR reviews support provider parsing plus metadata, diff, comments, commits, CI status, and report-generation wiring through the slash-command path. Live summary posting is planned through `gh pr comment`; use `--no-comment` for dry-run validation unless live posting has been explicitly tested for your target PR.
+
 **Flags:**
 - `--no-comment` - Output review to terminal only, don't post to MR
 - `--blocking` - Exit with code 1 if BLOCKING issues (CRITICAL/HIGH/MEDIUM) are found
