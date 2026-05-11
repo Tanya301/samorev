@@ -83,6 +83,98 @@ else:
     assert "live_posting=not-run" in result.stdout
 
 
+def test_gitlab_fetch_falls_back_to_public_api_and_renders_summary(monkeypatch):
+    from lib.provider_planning import parse_review_reference, plan_fetch
+    from samorev import cli
+
+    reference = parse_review_reference("https://gitlab.com/example-group/example-project/-/merge_requests/42")
+    plan = plan_fetch(reference)
+
+    monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/glab" if command == "glab" else None)
+
+    def fail_glab(command):
+        raise cli.FetchError(f"glab unavailable for {' '.join(command)}")
+
+    def fake_http_json(url):
+        if url.endswith("/merge_requests/42"):
+            return {
+                "title": "GitLab fallback demo",
+                "state": "opened",
+                "draft": False,
+                "head_pipeline": {"status": "failed"},
+            }
+        if url.endswith("/merge_requests/42/notes?per_page=100"):
+            return [{"body": "first"}, {"body": "second"}]
+        if url.endswith("/merge_requests/42/commits"):
+            return [{"id": "abc"}, {"id": "def"}, {"id": "ghi"}]
+        if url.endswith("/merge_requests/42/diffs"):
+            return [
+                {
+                    "old_path": "app.py",
+                    "new_path": "app.py",
+                    "diff": "@@ -1 +1 @@\n-old = True\n+new = True\n",
+                }
+            ]
+        raise AssertionError(f"unexpected GitLab API URL: {url}")
+
+    monkeypatch.setattr(cli, "_run_json", fail_glab)
+    monkeypatch.setattr(cli, "_http_json", fake_http_json)
+
+    summary = cli.fetch_review_summary(reference, plan, cli.PROMPT_PATH, blocking=True)
+
+    assert "samorev fetch summary" in summary
+    assert "provider=gitlab" in summary
+    assert "kind=mr" in summary
+    assert "project=example-group/example-project" in summary
+    assert "number=42" in summary
+    assert "title=GitLab fallback demo" in summary
+    assert "state=opened" in summary
+    assert "draft=false" in summary
+    assert "diff_lines=4" in summary
+    assert "diff_added=1" in summary
+    assert "diff_removed=1" in summary
+    assert "comments_count=2" in summary
+    assert "commits_count=3" in summary
+    assert "ci_status=failed" in summary
+    assert "ci_summary=pipeline_status=failed" in summary
+    assert "blocking=true" in summary
+    assert "no_comment=true" in summary
+    assert "live_posting=not-run" in summary
+
+
+def test_gitlab_public_api_fallback_keeps_fetching_when_notes_are_private(monkeypatch):
+    from lib.provider_planning import parse_review_reference, plan_fetch
+    from samorev import cli
+
+    reference = parse_review_reference("https://gitlab.com/example-group/example-project/-/merge_requests/42")
+    plan = plan_fetch(reference)
+
+    monkeypatch.setattr(cli.shutil, "which", lambda command: None)
+
+    def fake_http_json(url):
+        if url.endswith("/merge_requests/42"):
+            return {"title": "Public MR", "state": "merged", "draft": False, "head_pipeline": {"status": "success"}}
+        if url.endswith("/merge_requests/42/notes?per_page=100"):
+            raise cli.FetchError("notes are private")
+        if url.endswith("/merge_requests/42/commits"):
+            return [{"id": "abc"}]
+        if url.endswith("/merge_requests/42/diffs"):
+            return [{"old_path": "README.md", "new_path": "README.md", "diff": "+demo\n"}]
+        raise AssertionError(f"unexpected GitLab API URL: {url}")
+
+    monkeypatch.setattr(cli, "_http_json", fake_http_json)
+
+    summary = cli.fetch_review_summary(reference, plan, cli.PROMPT_PATH, blocking=False)
+
+    assert "provider=gitlab" in summary
+    assert "title=Public MR" in summary
+    assert "comments_count=0" in summary
+    assert "commits_count=1" in summary
+    assert "ci_status=success" in summary
+    assert "no_comment=true" in summary
+    assert "live_posting=not-run" in summary
+
+
 def test_pyproject_declares_samorev_console_script():
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
