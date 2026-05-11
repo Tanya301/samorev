@@ -64,6 +64,7 @@ for candidate in \
   "${REV_ROOT:-}/lib/provider_planning.py" \
   "$PWD/lib/provider_planning.py" \
   "$PWD/rev/lib/provider_planning.py" \
+  "$HOME/.claude/samorev/lib/provider_planning.py" \
   "$HOME/.claude/rev/lib/provider_planning.py"; do
   if [ -f "$candidate" ]; then
     PLAN_SCRIPT="$candidate"

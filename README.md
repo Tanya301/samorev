@@ -1,12 +1,12 @@
 # samorev - automated code review
 
-samorev is a Claude Code plugin that currently supports GitLab Merge Requests via `glab` using parallel AI agents. GitHub Pull Request support is planned and tracked separately.
+samorev is a Claude Code prompt/command pack for reviewing GitHub Pull Requests and GitLab Merge Requests. The `/review-mr` slash command uses a shared provider-planning core for GitHub `gh` and GitLab `glab` fetch/comment operations; the first release proves installed command discovery and provider planning, not live posting.
 
 ## Features
 
-- **Automatic self-update**: Checks for updates before each review (supports standalone repos and submodule installations)
+- **Automatic self-update**: Checks for updates before each review (supports standalone checkout and project-local installations)
 - **Parallel multi-agent review**: 5 specialized agents analyze code simultaneously, with optional repository-specific agents
-- **Provider scope**: Supports GitLab MRs via `glab`; GitHub PR support is planned
+- **Provider scope**: Plans GitHub PR operations via `gh` and GitLab MR operations via `glab`
 - **Optional rules integration**: Loads optional project-specific rules when a repository provides them
 - **Confidence scoring**: Rates each finding 0-10, filtering out likely false positives
 - **Three-tier findings**: Categorizes into blocking, non-blocking, and potential issues
@@ -27,13 +27,18 @@ samorev is a Claude Code plugin that currently supports GitLab Merge Requests vi
 
 ### Prerequisites
 
-1. **Claude Code** (latest stable version recommended) installed and configured
-2. **glab CLI** (v1.30.0 or later) authenticated with GitLab:
+1. **Python 3.11+**
+2. **Claude Code** (latest stable version recommended) installed and configured for slash-command review use
+3. **GitHub CLI** authenticated when reviewing GitHub PRs:
+   ```bash
+   gh auth login
+   ```
+4. **GitLab CLI** authenticated when reviewing GitLab MRs:
    ```bash
    glab auth login
    ```
 
-### Global Installation (recommended)
+### Claude Code slash-command installation
 
 Install samorev globally so `/review-mr` works from any directory:
 
@@ -41,9 +46,9 @@ Install samorev globally so `/review-mr` works from any directory:
 # Clone to Claude Code's config directory
 git clone https://github.com/Tanya301/samorev.git ~/.claude/samorev
 
-# Create symlink for the command
-mkdir -p ~/.claude/commands
-ln -s ~/.claude/samorev/.claude/commands/review-mr.md ~/.claude/commands/review-mr.md
+# Install the slash command
+cd ~/.claude/samorev
+bash scripts/install-claude-command.sh
 ```
 
 To update:
@@ -65,10 +70,13 @@ The `/review-mr` command will be available when running Claude Code from within 
 ## Usage
 
 ```bash
-# Review a GitLab MR by URL
+# Review a GitLab MR by URL through Claude Code
 /review-mr https://gitlab.com/example-org/example-repo/-/merge_requests/123
 
-# Review by MR number (uses current repo context)
+# Plan/review a GitHub PR by URL through Claude Code
+/review-mr https://github.com/example-org/example-repo/pull/123
+
+# Review by number (uses current repo context)
 /review-mr 123
 
 # Review without posting comment (output to terminal only)
@@ -78,11 +86,22 @@ The `/review-mr` command will be available when running Claude Code from within 
 /review-mr 123 --blocking
 ```
 
-GitHub PR review support is planned, but this command does not yet fetch, analyze, or post GitHub PR reviews end to end.
-
 **Flags:**
 - `--no-comment` - Output review to terminal only, don't post to MR
 - `--blocking` - Exit with code 1 if BLOCKING issues (CRITICAL/HIGH/MEDIUM) are found
+
+### Provider planning smoke
+
+The slash command delegates provider detection and command planning to `lib/provider_planning.py`. You can verify that wiring from a clean checkout without running a full AI review:
+
+```bash
+python lib/provider_planning.py https://github.com/example-org/example-repo/pull/123 --shell
+python lib/provider_planning.py https://gitlab.com/example-org/example-repo/-/merge_requests/123 --shell
+```
+
+### Standalone CLI
+
+Standalone CLI packaging is not part of the first prompt-pack release. Track it separately if a binary becomes useful beyond slash-command install and provider-planning smoke checks.
 
 ## Configuration
 
@@ -370,6 +389,13 @@ samorev can load optional project-specific rules from the `rules/` directory and
 ## License
 
 Apache License 2.0
+
+## Release provenance checklist
+
+- Source history: seeded from https://gitlab.com/postgres-ai/rev
+- License: Apache License 2.0 in this repository.
+- Public package target: Claude Code prompt/command pack with `/review-mr` installed by `scripts/install-claude-command.sh`.
+- Before the first tagged release, confirm repository owner approval for this repackaging and re-audit docs for stale install URLs, provider assumptions, and project-specific defaults.
 
 ## Links
 

@@ -15,9 +15,9 @@ def test_readme_describes_general_purpose_review_tool():
     readme = read_repo_file("README.md")
 
     assert "# samorev - automated code review" in readme.lower()
-    assert "currently supports GitLab Merge Requests via `glab`" in readme
-    assert "GitHub Pull Request support is planned" in readme
-    assert "Works with GitHub PRs via `gh` and GitLab MRs via `glab`" not in readme
+    assert "Plans GitHub PR operations via `gh` and GitLab MR operations via `glab`" in readme
+    assert "GitHub Pull Request support is planned" not in readme
+    assert "currently supports GitLab Merge Requests via `glab`" not in readme
     assert "optional project-specific rules" in readme
     assert "PostgresAI rules integration" not in readme
     assert "postgres-ai/platform" not in readme
