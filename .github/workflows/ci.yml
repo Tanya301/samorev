@@ -32,5 +32,11 @@ jobs:
       - name: Install slash command
         run: bash scripts/install-claude-command.sh
 
+      - name: Install CLI
+        run: python -m pip install -e .
+
       - name: Provider planning smoke
         run: python lib/provider_planning.py https://github.com/example-org/example-repo/pull/17 --shell
+
+      - name: CLI smoke
+        run: samorev review https://github.com/example-org/example-repo/pull/17 --no-comment --blocking --smoke
