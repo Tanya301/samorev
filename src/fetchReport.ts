@@ -47,8 +47,9 @@ export async function fetchReviewSummary(
   const title = String(fetched.metadata.title ?? fetched.metadata.source_branch ?? "(untitled)");
   const state = String(fetched.metadata.state ?? fetched.metadata.merge_status ?? "unknown");
   const draft = metadataDraft(reference.provider, fetched.metadata);
-
-  return [
+  const findings = reviewGateFindings(ci.status, draft);
+  const outcome = findings.length ? "FAIL" : "PASS";
+  const fetchSummary = [
     "samorev fetch summary",
     `provider=${reference.provider}`,
     `kind=${reference.kind}`,
@@ -71,6 +72,18 @@ export async function fetchReviewSummary(
     `posted_by=${options.postedBy ?? "local"}`,
     `no_comment=${String(options.noComment ?? true)}`,
     `live_posting=${options.livePosting ?? "not-run"}`,
+  ].join("\n");
+
+  return [
+    `samorev review gate: ${outcome}`,
+    `Result: ${outcome}`,
+    `Target: ${reference.provider}:${reference.projectPath}#${reference.number}`,
+    `Provider: ${reference.provider}`,
+    `CI: ${ci.status}`,
+    findings.length ? "Findings:" : "No blocking findings.",
+    ...findings.map((finding) => `- ${finding}`),
+    "",
+    fetchSummary,
   ].join("\n");
 }
 
@@ -275,6 +288,17 @@ function metadataDraft(provider: Provider, metadata: Record<string, unknown>): b
     return Boolean(metadata.draft);
   }
   return String(metadata.work_in_progress ?? "false").toLowerCase() === "true";
+}
+
+function reviewGateFindings(ciStatus: string, draft: boolean): string[] {
+  const findings: string[] = [];
+  if (draft) {
+    findings.push("Review target is draft.");
+  }
+  if (!["success", "none"].includes(ciStatus)) {
+    findings.push(`CI status is ${ciStatus}.`);
+  }
+  return findings;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -7,7 +7,7 @@
 
 ## 1. Goal
 
-Make `samorev` a Bun/TypeScript CLI that LLM agents can run from a checkout to fetch PR/MR context, render a compact review-ready report, post that report provider-native when requested, and preserve the existing REV-like Claude Code prompt/agent workflow.
+Make `samorev` a Bun/TypeScript CLI that LLM agents can run from a checkout to fetch PR/MR context, render a compact PASS/FAIL review-gate report, post that report provider-native when requested, and preserve the existing REV-like Claude Code prompt/agent workflow.
 
 ## 2. Non-Goals
 
@@ -26,7 +26,7 @@ bun run build
 bun run samorev review <PR-or-MR> --no-comment --fetch
 ```
 
-Expected result: a terminal summary containing provider, kind, project, number, target, title, state, draft status, diff size, comment count, commit count, CI status, prompt path, `posted_by`, `no_comment=true`, and `live_posting=not-run`.
+Expected result: a terminal review-gate comment containing PASS or FAIL, findings or `No blocking findings.`, provider, kind, project, number, target, title, state, draft status, diff size, comment count, commit count, CI status, prompt path, `posted_by`, `no_comment=true`, and `live_posting=not-run`.
 
 ### LLM Agent Review Prep
 
@@ -57,7 +57,7 @@ Inputs:
 
 Modes:
 
-- `--fetch`: execute provider metadata, diff, comments, commits, and CI fetches; posts the summary provider-native unless `--no-comment` is set.
+- `--fetch`: execute provider metadata, diff, comments, commits, and CI fetches; renders a PASS/FAIL review-gate comment and posts it provider-native unless `--no-comment` is set.
 - `--smoke`: render provider plan and prompt wiring; no provider network fetch.
 - `--blocking`: report blocking-mode intent in output; exit semantics for actual findings are deferred until agent execution is wired into the CLI.
 - no `--fetch` and `--no-comment`: print handoff instructions.
@@ -148,6 +148,7 @@ Every PR changing CLI behavior must include inline evidence, not only links:
 - GitHub PR fetch/report behavior is covered by automated tests.
 - GitLab MR fetch/report fallback behavior is covered by automated tests.
 - GitHub and GitLab provider-native posting behavior is covered by automated tests.
+- Posted provider-native bodies are PASS/FAIL review-gate comments, not raw fetch summaries.
 - Missing provider auth exits non-zero with a clear blocker and `live_posting=blocked`.
 - `--no-comment` fetch/report behavior never invokes provider posting.
 - Existing Python compatibility tests for slash-command packaging continue to pass until that path is fully delegated or retired.

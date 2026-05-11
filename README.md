@@ -74,7 +74,7 @@ bun run samorev review https://gitlab.com/example-org/example-repo/-/merge_reque
 bun run samorev review 123 --remote-url git@github.com:example-org/example-repo.git --no-comment --blocking
 ```
 
-The Bun/TypeScript CLI is the primary interface for LLM agents. `--fetch` executes the provider metadata, diff, comments, commits, and CI fetches itself, then renders an LLM-readable summary with title/state/draft status, diff size, comment count, commit count, CI summary, `posted_by`, and `live_posting`. Without `--no-comment`, the same summary is posted provider-native through authenticated `gh` or `glab`. GitHub uses `gh`. GitLab uses `glab` for authenticated posting and falls back to GitLab's public API only for no-comment public fetch reports.
+The Bun/TypeScript CLI is the primary interface for LLM agents. `--fetch` executes the provider metadata, diff, comments, commits, and CI fetches itself, then renders a readable PASS/FAIL review-gate comment with findings or a no-blockers statement plus title/state/draft status, diff size, comment count, commit count, CI summary, `posted_by`, and `live_posting`. Without `--no-comment`, the same gate comment is posted provider-native through authenticated `gh` or `glab`. GitHub uses `gh`. GitLab uses `glab` for authenticated posting and falls back to GitLab's public API only for no-comment public fetch reports.
 
 Use `--smoke` to verify provider planning and prompt wiring without running agents or posting:
 

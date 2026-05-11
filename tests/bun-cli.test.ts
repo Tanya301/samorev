@@ -55,6 +55,9 @@ describe("bun samorev CLI", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).not.toContain("Error:");
+    expect(result.stdout).toContain("samorev review gate: FAIL");
+    expect(result.stdout).toContain("Findings:");
+    expect(result.stdout).toContain("CI status is failure");
     expect(result.stdout).toContain("samorev fetch summary");
     expect(result.stdout).toContain("provider=github");
     expect(result.stdout).toContain("kind=pr");
@@ -97,6 +100,9 @@ describe("bun samorev CLI", () => {
     expect(result.stdout).toContain("no_comment=false");
     expect(result.stdout).toContain("live_posting=posted");
     expect(postedBody).toContain("samorev fetch summary");
+    expect(postedBody).toContain("samorev review gate: FAIL");
+    expect(postedBody).toContain("Findings:");
+    expect(postedBody).toContain("CI status is failure");
     expect(postedBody).toContain("provider=github");
     expect(postedBody).toContain("target=github:example-org/example-repo#17");
     expect(postedBody).toContain("posted_by=gh");
@@ -140,6 +146,8 @@ describe("bun samorev CLI", () => {
     );
 
     expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("samorev review gate: FAIL");
+    expect(result.stdout).toContain("Findings:");
     expect(result.stdout).toContain("posted_by=local");
     expect(result.stdout).toContain("no_comment=true");
     expect(result.stdout).toContain("live_posting=not-run");
@@ -160,12 +168,16 @@ describe("bun samorev CLI", () => {
 
     expect(result.exitCode).toBe(0);
     const postedBody = await readFile(postLog, "utf8");
+    expect(result.stdout).toContain("samorev review gate: FAIL");
     expect(result.stdout).toContain("provider=gitlab");
     expect(result.stdout).toContain("target=gitlab:example-group/example-project#42");
     expect(result.stdout).toContain("ci_status=failed");
     expect(result.stdout).toContain("posted_by=glab");
     expect(result.stdout).toContain("live_posting=posted");
     expect(postedBody).toContain("samorev fetch summary");
+    expect(postedBody).toContain("samorev review gate: FAIL");
+    expect(postedBody).toContain("Findings:");
+    expect(postedBody).toContain("CI status is failed");
     expect(postedBody).toContain("provider=gitlab");
     expect(postedBody).toContain("target=gitlab:example-group/example-project#42");
     expect(postedBody).toContain("posted_by=glab");
@@ -233,6 +245,7 @@ describe("bun samorev CLI", () => {
     });
 
     expect(summary).toContain("provider=gitlab");
+    expect(summary).toContain("samorev review gate: FAIL");
     expect(summary).toContain("kind=mr");
     expect(summary).toContain("project=example-group/example-project");
     expect(summary).toContain("target=gitlab:example-group/example-project#42");
@@ -280,6 +293,8 @@ describe("bun samorev CLI", () => {
     });
 
     expect(summary).toContain("provider=gitlab");
+    expect(summary).toContain("samorev review gate: PASS");
+    expect(summary).toContain("No blocking findings.");
     expect(summary).toContain("title=Public MR");
     expect(summary).toContain("comments_count=0");
     expect(summary).toContain("commits_count=1");
@@ -316,6 +331,7 @@ describe("bun samorev CLI", () => {
     expect(spec).toContain("GitHub");
     expect(spec).toContain("GitLab");
     expect(spec).toContain("provider-native");
+    expect(spec).toContain("PASS/FAIL");
     expect(spec).toContain("Evidence Standards");
     expect(spec).toContain("Acceptance Criteria");
     expect(spec).toContain("NikolayS/samospec#165");
