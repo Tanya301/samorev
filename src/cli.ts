@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fetchReviewSummary, FetchError } from "./fetchReport";
+import { assertProviderAuth, postProviderSummary, PostingError, postingTool } from "./providerPosting";
 import { parseReviewReference, planFetch, ReviewReferenceError } from "./providerPlanning";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -64,16 +65,54 @@ async function review(args: ReviewArgs): Promise<number> {
   }
 
   if (args.fetch) {
-    if (!args.noComment) {
-      console.error("Error: --fetch currently requires --no-comment because CLI posting is not enabled.");
-      return 2;
-    }
     try {
-      console.log(await fetchReviewSummary(reference, plan, relative(repoRoot, promptPath), { blocking: args.blocking }));
+      if (args.noComment) {
+        console.log(
+          await fetchReviewSummary(reference, plan, relative(repoRoot, promptPath), {
+            blocking: args.blocking,
+            noComment: true,
+            postedBy: "local",
+            livePosting: "not-run",
+          }),
+        );
+        return 0;
+      }
+
+      const tool = postingTool(reference);
+      const blockedSummary = await fetchReviewSummary(reference, plan, relative(repoRoot, promptPath), {
+        blocking: args.blocking,
+        noComment: false,
+        postedBy: tool,
+        livePosting: "blocked",
+      });
+
+      try {
+        await assertProviderAuth(reference);
+      } catch (error) {
+        if (error instanceof PostingError) {
+          console.log(blockedSummary);
+          console.error(error.message);
+          return 1;
+        }
+        throw error;
+      }
+
+      const postedSummary = await fetchReviewSummary(reference, plan, relative(repoRoot, promptPath), {
+        blocking: args.blocking,
+        noComment: false,
+        postedBy: tool,
+        livePosting: "posted",
+      });
+      await postProviderSummary(reference, plan, postedSummary);
+      console.log(postedSummary);
       return 0;
     } catch (error) {
       if (error instanceof FetchError) {
         console.error(`Error: ${error.message}`);
+        return 1;
+      }
+      if (error instanceof PostingError) {
+        console.error(error.message);
         return 1;
       }
       throw error;

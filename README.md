@@ -74,7 +74,7 @@ bun run samorev review https://gitlab.com/example-org/example-repo/-/merge_reque
 bun run samorev review 123 --remote-url git@github.com:example-org/example-repo.git --no-comment --blocking
 ```
 
-The Bun/TypeScript CLI is the primary interface for LLM agents. `--fetch` executes the provider metadata, diff, comments, commits, and CI fetches itself, then prints an LLM-readable summary with title/state/draft status, diff size, comment count, commit count, CI summary, and `live_posting=not-run`. GitHub uses `gh`. GitLab uses `glab` when available and falls back to GitLab's public API for public merge requests.
+The Bun/TypeScript CLI is the primary interface for LLM agents. `--fetch` executes the provider metadata, diff, comments, commits, and CI fetches itself, then renders an LLM-readable summary with title/state/draft status, diff size, comment count, commit count, CI summary, `posted_by`, and `live_posting`. Without `--no-comment`, the same summary is posted provider-native through authenticated `gh` or `glab`. GitHub uses `gh`. GitLab uses `glab` for authenticated posting and falls back to GitLab's public API only for no-comment public fetch reports.
 
 Use `--smoke` to verify provider planning and prompt wiring without running agents or posting:
 
@@ -82,7 +82,7 @@ Use `--smoke` to verify provider planning and prompt wiring without running agen
 bun run samorev review https://github.com/example-org/example-repo/pull/123 --no-comment --blocking --smoke
 ```
 
-Live provider posting from the CLI is intentionally disabled until it is reviewed and tested. Use `--no-comment` for LLM-run reviews in this release.
+Use `--no-comment` to print the summary locally without provider posting. If posting is requested and provider auth is missing, samorev exits non-zero with `live_posting=blocked`.
 
 ### Claude Code slash-command installation
 
@@ -132,7 +132,7 @@ The `/review-mr` command will be available when running Claude Code from within 
 /review-mr 123 --blocking
 ```
 
-GitHub PR reviews support provider parsing plus metadata, diff, comments, commits, CI status, and report-generation wiring through the slash-command path. Live summary posting is planned through `gh pr comment`; use `--no-comment` for dry-run validation unless live posting has been explicitly tested for your target PR.
+GitHub PR reviews support provider parsing plus metadata, diff, comments, commits, CI status, report generation, and provider-native summary posting through `gh pr comment`. Use `--no-comment` for dry-run validation.
 
 **Flags:**
 - `--no-comment` - Output review to terminal only, don't post to MR

@@ -8,12 +8,13 @@ const repoRoot = import.meta.dir.replace(/\/tests$/, "");
 const fakeBin = join(repoRoot, ".tmp-bun-test-bin");
 const originalPath = process.env.PATH ?? "";
 
-async function runSamorev(args: string[]) {
+async function runSamorev(args: string[], extraEnv: Record<string, string> = {}) {
   return Bun.spawn({
     cmd: ["bun", "run", "samorev", ...args],
     cwd: repoRoot,
     env: {
       ...process.env,
+      ...extraEnv,
       PATH: `${fakeBin}:${originalPath}`,
     },
     stdout: "pipe",
@@ -41,27 +42,7 @@ afterEach(async () => {
 
 describe("bun samorev CLI", () => {
   it("fetches GitHub provider data and renders a no-comment summary", async () => {
-    await writeFile(
-      join(fakeBin, "gh"),
-      `#!/usr/bin/env bun
-const args = Bun.argv.slice(2);
-if (args.slice(0, 3).join(" ") === "pr view 17") {
-  console.log(JSON.stringify({ title: "Demo PR", state: "OPEN", isDraft: false }));
-} else if (args.slice(0, 3).join(" ") === "pr diff 17") {
-  Bun.write(Bun.stdout, "diff --git a/app.ts b/app.ts\\n+console.log('demo')\\n-old = true\\n");
-} else if (args.slice(0, 2).join(" ") === "api repos/example-org/example-repo/issues/17/comments") {
-  console.log(JSON.stringify([{ body: "first" }, { body: "second" }]));
-} else if (args.slice(0, 2).join(" ") === "api repos/example-org/example-repo/pulls/17/commits") {
-  console.log(JSON.stringify([{ sha: "abc" }, { sha: "def" }, { sha: "ghi" }]));
-} else if (args.slice(0, 2).join(" ") === "api repos/example-org/example-repo/commits/pull/17/head/check-runs") {
-  console.log(JSON.stringify({ total_count: 2, check_runs: [{ name: "unit", conclusion: "success" }, { name: "lint", conclusion: "failure" }] }));
-} else {
-  console.error("unexpected gh args: " + JSON.stringify(args));
-  process.exit(42);
-}
-`,
-      { mode: 0o755 },
-    );
+    await writeGitHubFake();
 
     const result = await output(
       await runSamorev([
@@ -78,6 +59,7 @@ if (args.slice(0, 3).join(" ") === "pr view 17") {
     expect(result.stdout).toContain("provider=github");
     expect(result.stdout).toContain("kind=pr");
     expect(result.stdout).toContain("project=example-org/example-repo");
+    expect(result.stdout).toContain("target=github:example-org/example-repo#17");
     expect(result.stdout).toContain("title=Demo PR");
     expect(result.stdout).toContain("state=OPEN");
     expect(result.stdout).toContain("draft=false");
@@ -88,8 +70,129 @@ if (args.slice(0, 3).join(" ") === "pr view 17") {
     expect(result.stdout).toContain("commits_count=3");
     expect(result.stdout).toContain("ci_status=failure");
     expect(result.stdout).toContain("ci_summary=total=2 success=1 failure=1 pending=0 other=0");
+    expect(result.stdout).toContain("posted_by=local");
     expect(result.stdout).toContain("no_comment=true");
     expect(result.stdout).toContain("live_posting=not-run");
+  });
+
+  it("posts GitHub fetch summary through authenticated gh", async () => {
+    const postLog = join(fakeBin, "github-post.txt");
+    await writeGitHubFake(postLog);
+
+    const result = await output(
+      await runSamorev([
+        "review",
+        "https://github.com/example-org/example-repo/pull/17",
+        "--fetch",
+      ], { SAMOREV_FAKE_AUTH: "ok" }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).not.toContain("Error:");
+    const postedBody = await readFile(postLog, "utf8");
+    expect(result.stdout).toContain("provider=github");
+    expect(result.stdout).toContain("target=github:example-org/example-repo#17");
+    expect(result.stdout).toContain("ci_status=failure");
+    expect(result.stdout).toContain("posted_by=gh");
+    expect(result.stdout).toContain("no_comment=false");
+    expect(result.stdout).toContain("live_posting=posted");
+    expect(postedBody).toContain("samorev fetch summary");
+    expect(postedBody).toContain("provider=github");
+    expect(postedBody).toContain("target=github:example-org/example-repo#17");
+    expect(postedBody).toContain("posted_by=gh");
+    expect(postedBody).toContain("live_posting=posted");
+  });
+
+  it("blocks GitHub posting when gh auth is unavailable", async () => {
+    const postLog = join(fakeBin, "github-post.txt");
+    await writeGitHubFake(postLog);
+
+    const result = await output(
+      await runSamorev([
+        "review",
+        "https://github.com/example-org/example-repo/pull/17",
+        "--fetch",
+      ], { SAMOREV_FAKE_AUTH: "missing" }),
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Provider posting blocked");
+    expect(result.stderr).toContain("gh auth status");
+    expect(result.stdout).toContain("provider=github");
+    expect(result.stdout).toContain("target=github:example-org/example-repo#17");
+    expect(result.stdout).toContain("ci_status=failure");
+    expect(result.stdout).toContain("posted_by=gh");
+    expect(result.stdout).toContain("live_posting=blocked");
+    await expect(readFile(postLog, "utf8")).rejects.toThrow();
+  });
+
+  it("does not invoke provider posting in --no-comment mode", async () => {
+    const postLog = join(fakeBin, "github-post.txt");
+    await writeGitHubFake(postLog);
+
+    const result = await output(
+      await runSamorev([
+        "review",
+        "https://github.com/example-org/example-repo/pull/17",
+        "--no-comment",
+        "--fetch",
+      ], { SAMOREV_FAKE_AUTH: "ok" }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("posted_by=local");
+    expect(result.stdout).toContain("no_comment=true");
+    expect(result.stdout).toContain("live_posting=not-run");
+    await expect(readFile(postLog, "utf8")).rejects.toThrow();
+  });
+
+  it("posts GitLab fetch summary through authenticated glab", async () => {
+    const postLog = join(fakeBin, "gitlab-post.txt");
+    await writeGitLabFake(postLog);
+
+    const result = await output(
+      await runSamorev([
+        "review",
+        "https://gitlab.com/example-group/example-project/-/merge_requests/42",
+        "--fetch",
+      ], { SAMOREV_FAKE_AUTH: "ok" }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    const postedBody = await readFile(postLog, "utf8");
+    expect(result.stdout).toContain("provider=gitlab");
+    expect(result.stdout).toContain("target=gitlab:example-group/example-project#42");
+    expect(result.stdout).toContain("ci_status=failed");
+    expect(result.stdout).toContain("posted_by=glab");
+    expect(result.stdout).toContain("live_posting=posted");
+    expect(postedBody).toContain("samorev fetch summary");
+    expect(postedBody).toContain("provider=gitlab");
+    expect(postedBody).toContain("target=gitlab:example-group/example-project#42");
+    expect(postedBody).toContain("posted_by=glab");
+    expect(postedBody).toContain("live_posting=posted");
+  });
+
+  it("blocks GitLab posting when glab auth is unavailable", async () => {
+    const postLog = join(fakeBin, "gitlab-post.txt");
+    await writeGitLabFake(postLog);
+
+    const result = await output(
+      await runSamorev([
+        "review",
+        "https://gitlab.com/example-group/example-project/-/merge_requests/42",
+        "--fetch",
+      ], { SAMOREV_FAKE_AUTH: "missing" }),
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Provider posting blocked");
+    expect(result.stderr).toContain("glab auth status");
+    expect(result.stdout).toContain("provider=gitlab");
+    expect(result.stdout).toContain("target=gitlab:example-group/example-project#42");
+    expect(result.stdout).toContain("ci_status=failed");
+    expect(result.stdout).toContain("posted_by=glab");
+    expect(result.stdout).toContain("live_posting=blocked");
+    await expect(readFile(postLog, "utf8")).rejects.toThrow();
   });
 
   it("renders GitLab public API fallback summary fields", async () => {
@@ -132,6 +235,7 @@ if (args.slice(0, 3).join(" ") === "pr view 17") {
     expect(summary).toContain("provider=gitlab");
     expect(summary).toContain("kind=mr");
     expect(summary).toContain("project=example-group/example-project");
+    expect(summary).toContain("target=gitlab:example-group/example-project#42");
     expect(summary).toContain("number=42");
     expect(summary).toContain("title=GitLab fallback demo");
     expect(summary).toContain("state=opened");
@@ -144,6 +248,7 @@ if (args.slice(0, 3).join(" ") === "pr view 17") {
     expect(summary).toContain("ci_status=failed");
     expect(summary).toContain("ci_summary=pipeline_status=failed");
     expect(summary).toContain("blocking=true");
+    expect(summary).toContain("posted_by=local");
     expect(summary).toContain("no_comment=true");
     expect(summary).toContain("live_posting=not-run");
   });
@@ -210,8 +315,76 @@ if (args.slice(0, 3).join(" ") === "pr view 17") {
     expect(spec).toContain("bun run samorev review <reference>");
     expect(spec).toContain("GitHub");
     expect(spec).toContain("GitLab");
+    expect(spec).toContain("provider-native");
     expect(spec).toContain("Evidence Standards");
     expect(spec).toContain("Acceptance Criteria");
     expect(spec).toContain("NikolayS/samospec#165");
   });
 });
+
+async function writeGitHubFake(postLog?: string) {
+  await writeFile(
+    join(fakeBin, "gh"),
+    `#!/usr/bin/env bun
+const args = Bun.argv.slice(2);
+if (args.slice(0, 3).join(" ") === "pr view 17") {
+  console.log(JSON.stringify({ title: "Demo PR", state: "OPEN", isDraft: false }));
+} else if (args.slice(0, 3).join(" ") === "pr diff 17") {
+  Bun.write(Bun.stdout, "diff --git a/app.ts b/app.ts\\n+console.log('demo')\\n-old = true\\n");
+} else if (args.slice(0, 2).join(" ") === "api repos/example-org/example-repo/issues/17/comments") {
+  console.log(JSON.stringify([{ body: "first" }, { body: "second" }]));
+} else if (args.slice(0, 2).join(" ") === "api repos/example-org/example-repo/pulls/17/commits") {
+  console.log(JSON.stringify([{ sha: "abc" }, { sha: "def" }, { sha: "ghi" }]));
+} else if (args.slice(0, 2).join(" ") === "api repos/example-org/example-repo/commits/pull/17/head/check-runs") {
+  console.log(JSON.stringify({ total_count: 2, check_runs: [{ name: "unit", conclusion: "success" }, { name: "lint", conclusion: "failure" }] }));
+} else if (args.slice(0, 2).join(" ") === "auth status") {
+  if (process.env.SAMOREV_FAKE_AUTH === "ok") {
+    console.error("Logged in to github.com");
+  } else {
+    console.error("not logged in to github.com");
+    process.exit(1);
+  }
+} else if (args.slice(0, 3).join(" ") === "pr comment 17") {
+  const index = args.indexOf("--body");
+  const body = args[index + 1] ?? "";
+  await Bun.write(${JSON.stringify(postLog ?? join(fakeBin, "unexpected-github-post.txt"))}, body);
+} else {
+  console.error("unexpected gh args: " + JSON.stringify(args));
+  process.exit(42);
+}
+`,
+    { mode: 0o755 },
+  );
+}
+
+async function writeGitLabFake(postLog?: string) {
+  await writeFile(
+    join(fakeBin, "glab"),
+    `#!/usr/bin/env bun
+const args = Bun.argv.slice(2);
+if (args.slice(0, 2).join(" ") === "api projects/example-group%2Fexample-project/merge_requests/42") {
+  console.log(JSON.stringify({ title: "GitLab demo", state: "opened", draft: false, head_pipeline: { status: "failed" } }));
+} else if (args.slice(0, 3).join(" ") === "mr diff 42") {
+  Bun.write(Bun.stdout, "diff --git a/app.ts b/app.ts\\n+console.log('demo')\\n-old = true\\n");
+} else if (args.slice(0, 2).join(" ") === "api projects/example-group%2Fexample-project/merge_requests/42/notes?per_page=10&sort=desc") {
+  console.log(JSON.stringify([{ body: "first" }, { body: "second" }]));
+} else if (args.slice(0, 2).join(" ") === "api projects/example-group%2Fexample-project/merge_requests/42/commits") {
+  console.log(JSON.stringify([{ id: "abc" }, { id: "def" }]));
+} else if (args.slice(0, 2).join(" ") === "auth status") {
+  if (process.env.SAMOREV_FAKE_AUTH === "ok") {
+    console.error("Logged in to gitlab.com");
+  } else {
+    console.error("not logged in to gitlab.com");
+    process.exit(1);
+  }
+} else if (args.slice(0, 3).join(" ") === "mr comment 42") {
+  const index = args.indexOf("-m");
+  await Bun.write(${JSON.stringify(postLog ?? join(fakeBin, "unexpected-gitlab-post.txt"))}, args[index + 1] ?? "");
+} else {
+  console.error("unexpected glab args: " + JSON.stringify(args));
+  process.exit(42);
+}
+`,
+    { mode: 0o755 },
+  );
+}

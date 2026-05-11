@@ -23,7 +23,14 @@ export async function fetchReviewSummary(
   reference: ReviewReference,
   plan: FetchPlan,
   promptPath: string,
-  options: { blocking: boolean; runCommand?: RunCommand; httpJson?: HttpJson } = { blocking: false },
+  options: {
+    blocking: boolean;
+    runCommand?: RunCommand;
+    httpJson?: HttpJson;
+    noComment?: boolean;
+    postedBy?: string;
+    livePosting?: "not-run" | "posted" | "blocked";
+  } = { blocking: false },
 ): Promise<string> {
   const runCommand = options.runCommand ?? runText;
   const httpJson = options.httpJson ?? fetchJson;
@@ -47,6 +54,7 @@ export async function fetchReviewSummary(
     `kind=${reference.kind}`,
     `project=${reference.projectPath}`,
     `number=${reference.number}`,
+    `target=${reference.provider}:${reference.projectPath}#${reference.number}`,
     `title=${title}`,
     `state=${state}`,
     `draft=${String(draft)}`,
@@ -60,8 +68,9 @@ export async function fetchReviewSummary(
     `ci_summary=${ci.summary}`,
     `prompt=${promptPath}`,
     `blocking=${String(options.blocking)}`,
-    "no_comment=true",
-    "live_posting=not-run",
+    `posted_by=${options.postedBy ?? "local"}`,
+    `no_comment=${String(options.noComment ?? true)}`,
+    `live_posting=${options.livePosting ?? "not-run"}`,
   ].join("\n");
 }
 
