@@ -7,12 +7,11 @@
 
 ## 1. Goal
 
-Make `samorev` a Bun/TypeScript CLI that LLM agents can run from a checkout to fetch PR/MR context, render a compact review-ready report, and preserve the existing REV-like Claude Code prompt/agent workflow.
+Make `samorev` a Bun/TypeScript CLI that LLM agents can run from a checkout to fetch PR/MR context, render a compact PASS/FAIL review-gate report, post that report provider-native when requested, and preserve the existing REV-like Claude Code prompt/agent workflow.
 
 ## 2. Non-Goals
 
 - Do not replace the review agents with a new autonomous review engine.
-- Do not enable live provider posting until it has explicit tests and review.
 - Do not require hosted services, databases, or non-git state.
 - Do not make Python the primary CLI surface for new users.
 
@@ -27,7 +26,7 @@ bun run build
 bun run samorev review <PR-or-MR> --no-comment --fetch
 ```
 
-Expected result: a terminal summary containing provider, kind, project, number, title, state, draft status, diff size, comment count, commit count, CI status, prompt path, `no_comment=true`, and `live_posting=not-run`.
+Expected result: a terminal review-gate comment containing PASS or FAIL, findings or `No blocking findings.`, provider, kind, project, number, target, title, state, draft status, diff size, comment count, commit count, CI status, prompt path, `posted_by`, `no_comment=true`, and `live_posting=not-run`.
 
 ### LLM Agent Review Prep
 
@@ -58,16 +57,17 @@ Inputs:
 
 Modes:
 
-- `--fetch`: execute provider metadata, diff, comments, commits, and CI fetches; requires `--no-comment`.
+- `--fetch`: execute provider metadata, diff, comments, commits, and CI fetches; renders a PASS/FAIL review-gate comment and posts it provider-native unless `--no-comment` is set.
 - `--smoke`: render provider plan and prompt wiring; no provider network fetch.
 - `--blocking`: report blocking-mode intent in output; exit semantics for actual findings are deferred until agent execution is wired into the CLI.
 - no `--fetch` and `--no-comment`: print handoff instructions.
 
 Exit behavior:
 
-- `0`: successful smoke, handoff, or fetch report.
+- `0`: successful smoke, handoff, fetch report, or provider-native summary post.
 - `1`: provider fetch failed or required prompt missing.
-- `2`: invalid arguments, invalid reference, or live posting requested from CLI.
+- `1`: posting requested but provider auth/posting failed; output includes `live_posting=blocked` for auth blockers.
+- `2`: invalid arguments or invalid reference.
 
 ## 5. Provider Behavior
 
@@ -82,6 +82,7 @@ Fetches:
 - Comments: `gh api repos/<owner>/<repo>/issues/<number>/comments --paginate`
 - Commits: `gh api repos/<owner>/<repo>/pulls/<number>/commits --paginate`
 - CI: `gh api repos/<owner>/<repo>/commits/pull/<number>/head/check-runs --paginate`
+- Posting: `gh pr comment <number> --repo <owner>/<repo> --body <summary>`
 
 CI summary buckets: `success`, `failure`, `pending`, `other`.
 
@@ -98,6 +99,7 @@ Fetches:
 - Comments: notes; inaccessible notes become `comments_count=0` only in public fallback.
 - Commits: MR commits.
 - CI: `head_pipeline.status` when present; otherwise provider state fallback.
+- Posting: `glab mr comment <number> --repo <group>/<project> -m <summary>`
 
 ## 6. Architecture
 
@@ -108,6 +110,8 @@ CLI args
           parses reference, validates provider, creates fetch plan
       -> src/fetchReport.ts
           executes provider fetches, normalizes counts/status, renders summary
+      -> src/providerPosting.ts
+          verifies provider auth, posts rendered summary through gh/glab
       -> .claude/commands/review-mr.md
           remains the review orchestration prompt
       -> agents/*.md
@@ -119,6 +123,7 @@ Boundaries:
 - Provider CLIs and public APIs are external systems.
 - `src/providerPlanning.ts` owns input validation and command construction.
 - `src/fetchReport.ts` owns data fetching and report normalization.
+- `src/providerPosting.ts` owns provider auth checks and native comment posting.
 - `.claude/commands/review-mr.md` owns agent orchestration semantics.
 
 ## 7. Evidence Standards
@@ -130,7 +135,7 @@ Every PR changing CLI behavior must include inline evidence, not only links:
 - `bun install`, `bun test`, and `bun run build` output summary.
 - At least one no-comment GitHub fetch report or a clear reason it was not possible.
 - GitLab fetch coverage through `glab` or documented public API fallback.
-- Explicit statement that no live provider comments were posted unless live posting is the tested feature.
+- Explicit statement whether live provider comments were posted, blocked, or skipped via `--no-comment`.
 
 ## 8. Acceptance Criteria
 
@@ -142,6 +147,10 @@ Every PR changing CLI behavior must include inline evidence, not only links:
 - Built bin path works after build.
 - GitHub PR fetch/report behavior is covered by automated tests.
 - GitLab MR fetch/report fallback behavior is covered by automated tests.
+- GitHub and GitLab provider-native posting behavior is covered by automated tests.
+- Posted provider-native bodies are PASS/FAIL review-gate comments, not raw fetch summaries.
+- Missing provider auth exits non-zero with a clear blocker and `live_posting=blocked`.
+- `--no-comment` fetch/report behavior never invokes provider posting.
 - Existing Python compatibility tests for slash-command packaging continue to pass until that path is fully delegated or retired.
 - README documents Bun as the primary CLI workflow.
 
@@ -149,5 +158,4 @@ Every PR changing CLI behavior must include inline evidence, not only links:
 
 - Decide whether to retire the Python CLI wrapper or keep it as a compatibility shim for one release.
 - Delegate `/review-mr` provider planning directly to the Bun CLI after installed-path behavior is proven.
-- Add tested live-posting mode only after no-comment fetch/report is stable.
 - Add release provenance for the Bun package before the first public tag.
