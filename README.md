@@ -1,6 +1,6 @@
 # samorev - automated code review
 
-samorev is a Claude Code prompt/command pack for reviewing GitHub Pull Requests and GitLab Merge Requests. The `/review-mr` slash command uses a shared provider-planning core for GitHub `gh` and GitLab `glab` fetch/comment operations; the first release proves installed command discovery and provider planning, not live posting.
+samorev is a CLI-first review tool for GitHub Pull Requests and GitLab Merge Requests. The `samorev review` command is a thin wrapper around the same provider-planning core and review prompt used by the Claude Code `/review-mr` command, so LLM agents can invoke reviews non-interactively without forking the review system. The Claude Code prompt/command pack remains available for interactive use.
 
 ## Features
 
@@ -37,6 +37,38 @@ samorev is a Claude Code prompt/command pack for reviewing GitHub Pull Requests 
    ```bash
    glab auth login
    ```
+
+### CLI installation
+
+Install from a checkout while the package is pre-release:
+
+```bash
+git clone https://github.com/Tanya301/samorev.git
+cd samorev
+python -m pip install -e .
+```
+
+Primary CLI target for LLM-run reviews:
+
+```bash
+samorev review <PR-or-MR> --no-comment --blocking
+```
+
+Examples:
+
+```bash
+samorev review https://github.com/example-org/example-repo/pull/123 --no-comment --blocking
+samorev review https://gitlab.com/example-org/example-repo/-/merge_requests/123 --no-comment
+samorev review 123 --remote-url git@github.com:example-org/example-repo.git --no-comment --blocking
+```
+
+Use `--smoke` to verify provider planning and prompt wiring without running agents or posting:
+
+```bash
+samorev review https://github.com/example-org/example-repo/pull/123 --no-comment --blocking --smoke
+```
+
+Live provider posting from the CLI is intentionally disabled until it is reviewed and tested. Use `--no-comment` for LLM-run reviews in this release.
 
 ### Claude Code slash-command installation
 
@@ -101,9 +133,13 @@ python lib/provider_planning.py https://github.com/example-org/example-repo/pull
 python lib/provider_planning.py https://gitlab.com/example-org/example-repo/-/merge_requests/123 --shell
 ```
 
-### Standalone CLI
+### Claude Code slash command
 
-Standalone CLI packaging is not part of the first prompt-pack release. Track it separately if a binary becomes useful beyond slash-command install and provider-planning smoke checks.
+The slash command remains available for interactive Claude Code use and delegates to the same provider-planning helper as the CLI:
+
+```bash
+/review-mr https://github.com/example-org/example-repo/pull/123 --no-comment
+```
 
 ## Configuration
 
@@ -396,7 +432,7 @@ Apache License 2.0
 
 - Source history: seeded from https://gitlab.com/postgres-ai/rev
 - License: Apache License 2.0 in this repository.
-- Public package target: Claude Code prompt/command pack with `/review-mr` installed by `scripts/install-claude-command.sh`.
+- Public package target: CLI-first `samorev review` wrapper plus Claude Code `/review-mr` command pack.
 - Before the first tagged release, confirm repository owner approval for this repackaging and re-audit docs for stale install URLs, provider assumptions, and project-specific defaults.
 
 ## Links

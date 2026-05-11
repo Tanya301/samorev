@@ -148,7 +148,7 @@ def test_install_docs_cover_prompt_pack_auth_provenance_and_tag_readiness():
     assert "GitHub PR support is planned" not in readme
     assert "Source history: seeded from https://gitlab.com/postgres-ai/rev" in readme
     assert "Release provenance checklist" in readme
-    assert "Standalone CLI" in readme
+    assert "CLI-first" in readme
 
 
 def test_github_actions_runs_tests_and_slash_command_smoke():
@@ -159,4 +159,6 @@ def test_github_actions_runs_tests_and_slash_command_smoke():
     assert "python-version: '3.11'" in workflow
     assert "python -m pytest tests/ -m 'not api' -q" in workflow
     assert "bash scripts/install-claude-command.sh" in workflow
+    assert "python -m pip install -e ." in workflow
+    assert "samorev review https://github.com/example-org/example-repo/pull/17 --no-comment --blocking --smoke" in workflow
     assert "python lib/provider_planning.py https://github.com/example-org/example-repo/pull/17 --shell" in workflow
