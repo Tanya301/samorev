@@ -54,13 +54,22 @@ Primary CLI target for LLM-run reviews:
 samorev review <PR-or-MR> --no-comment --blocking
 ```
 
+Fetch provider data and print an inline demo/report summary:
+
+```bash
+samorev review <PR-or-MR> --no-comment --fetch
+```
+
 Examples:
 
 ```bash
 samorev review https://github.com/example-org/example-repo/pull/123 --no-comment --blocking
+samorev review https://github.com/example-org/example-repo/pull/123 --no-comment --fetch
 samorev review https://gitlab.com/example-org/example-repo/-/merge_requests/123 --no-comment
 samorev review 123 --remote-url git@github.com:example-org/example-repo.git --no-comment --blocking
 ```
+
+`--fetch` executes the provider metadata, diff, comments, commits, and CI fetches itself, then prints an LLM-readable summary with title/state/draft status, diff size, comment count, commit count, CI summary, and `live_posting=not-run`. GitHub uses `gh`. GitLab uses `glab` when available and falls back to GitLab's public API for public merge requests.
 
 Use `--smoke` to verify provider planning and prompt wiring without running agents or posting:
 

@@ -1,6 +1,7 @@
 """CLI-first review invocation tests for LLM-run samorev reviews."""
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tomllib
@@ -17,6 +18,69 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
     )
+
+
+def run_cli_with_path(path: str, *args: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["PATH"] = f"{path}{os.pathsep}{env['PATH']}"
+    return subprocess.run(
+        [sys.executable, "-m", "samorev.cli", *args],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_review_cli_fetches_github_provider_data_and_renders_summary(tmp_path):
+    fake_gh = tmp_path / "gh"
+    fake_gh.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+
+args = sys.argv[1:]
+if args[:3] == ["pr", "view", "17"]:
+    print(json.dumps({"title": "Demo PR", "state": "OPEN", "isDraft": False}))
+elif args[:3] == ["pr", "diff", "17"]:
+    sys.stdout.write("diff --git a/app.py b/app.py\\n+print('demo')\\n-old = True\\n")
+elif args[:2] == ["api", "repos/example-org/example-repo/issues/17/comments"]:
+    print(json.dumps([{"body": "first"}, {"body": "second"}]))
+elif args[:2] == ["api", "repos/example-org/example-repo/pulls/17/commits"]:
+    print(json.dumps([{"sha": "abc"}, {"sha": "def"}, {"sha": "ghi"}]))
+elif args[:2] == ["api", "repos/example-org/example-repo/commits/pull/17/head/check-runs"]:
+    print(json.dumps({"total_count": 2, "check_runs": [{"name": "unit", "conclusion": "success"}, {"name": "lint", "conclusion": "failure"}]}))
+else:
+    print(f"unexpected gh args: {args}", file=sys.stderr)
+    sys.exit(42)
+""",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o755)
+
+    result = run_cli_with_path(
+        str(tmp_path),
+        "review",
+        "https://github.com/example-org/example-repo/pull/17",
+        "--no-comment",
+        "--fetch",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "samorev fetch summary" in result.stdout
+    assert "provider=github" in result.stdout
+    assert "title=Demo PR" in result.stdout
+    assert "state=OPEN" in result.stdout
+    assert "draft=false" in result.stdout
+    assert "diff_lines=3" in result.stdout
+    assert "diff_added=1" in result.stdout
+    assert "diff_removed=1" in result.stdout
+    assert "comments_count=2" in result.stdout
+    assert "commits_count=3" in result.stdout
+    assert "ci_status=failure" in result.stdout
+    assert "ci_summary=total=2 success=1 failure=1 pending=0 other=0" in result.stdout
+    assert "no_comment=true" in result.stdout
+    assert "live_posting=not-run" in result.stdout
 
 
 def test_pyproject_declares_samorev_console_script():
@@ -96,6 +160,7 @@ def test_readme_documents_cli_first_review_interface():
 
     assert "CLI-first" in readme
     assert "samorev review <PR-or-MR> --no-comment --blocking" in readme
+    assert "samorev review <PR-or-MR> --no-comment --fetch" in readme
     assert "samorev review https://github.com/example-org/example-repo/pull/123 --no-comment --blocking" in readme
     assert "samorev review https://gitlab.com/example-org/example-repo/-/merge_requests/123 --no-comment" in readme
     assert "thin wrapper" in readme
