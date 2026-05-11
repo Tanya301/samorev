@@ -45,13 +45,13 @@ def test_installed_command_finds_helper_from_arbitrary_repo(tmp_path: Path):
     step_1_section = command.split("### Step 1: Parse review reference", 1)[1]
     step_1 = step_1_section.split("```bash\n", 1)[1].split("\n```\n\n### Step 2", 1)[0]
     result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            "MR_REF=https://github.com/example-org/example-repo/pull/17\n"
-            + step_1
-            + "\nprintf 'provider=%s\\nproject=%s\\n' \"$REVIEW_PROVIDER\" \"$PROJECT\"\n",
-        ],
+            [
+                "bash",
+                "-c",
+                "ARGUMENTS=https://github.com/example-org/example-repo/pull/17\n"
+                + step_1
+                + "\nprintf 'provider=%s\\nproject=%s\\n' \"$REVIEW_PROVIDER\" \"$PROJECT\"\n",
+            ],
         cwd=target_repo,
         env={**os.environ, "HOME": str(home)},
         capture_output=True,
