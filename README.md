@@ -51,6 +51,8 @@ bun run build
 
 The checkout command for agents is `bun run samorev ...`. `bun run build` also writes the installable bin target at `dist/cli.js`.
 
+See [SPEC.md](SPEC.md) for the concise CLI contract, provider behavior, evidence standards, and acceptance criteria.
+
 Primary CLI target for LLM-run reviews:
 
 ```bash

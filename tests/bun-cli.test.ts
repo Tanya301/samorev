@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fetchReviewSummary, FetchError } from "../src/fetchReport";
 import { parseReviewReference, planFetch } from "../src/providerPlanning";
@@ -201,5 +201,17 @@ if (args.slice(0, 3).join(" ") === "pr view 17") {
     expect(result.stderr).toContain("Invalid review reference");
     expect(result.stderr).not.toContain("error:");
     expect(result.stderr).not.toContain("Traceback");
+  });
+
+  it("documents the Bun CLI contract in a concise root spec", async () => {
+    const spec = await readFile(join(repoRoot, "SPEC.md"), "utf8");
+
+    expect(spec).toContain("# samorev - Product Spec");
+    expect(spec).toContain("bun run samorev review <reference>");
+    expect(spec).toContain("GitHub");
+    expect(spec).toContain("GitLab");
+    expect(spec).toContain("Evidence Standards");
+    expect(spec).toContain("Acceptance Criteria");
+    expect(spec).toContain("NikolayS/samospec#165");
   });
 });
