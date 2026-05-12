@@ -29,13 +29,14 @@ samorev is a CLI-first review tool for GitHub Pull Requests and GitLab Merge Req
 
 ### Prerequisites
 
-1. **Python 3.11+**
-2. **Claude Code** (latest stable version recommended) installed and configured for slash-command review use
-3. **GitHub CLI** authenticated when reviewing GitHub PRs:
+1. **Bun** for the primary `samorev` CLI.
+2. **Python 3.11+** for the current Claude Code slash-command compatibility helpers.
+3. **Claude Code** (latest stable version recommended) installed and configured for slash-command review use.
+4. **GitHub CLI** authenticated when reviewing GitHub PRs:
    ```bash
    gh auth login
    ```
-4. **GitLab CLI** authenticated when reviewing GitLab MRs:
+5. **GitLab CLI** authenticated when reviewing GitLab MRs:
    ```bash
    glab auth login
    ```
@@ -77,6 +78,8 @@ bun run samorev review 123 --remote-url git@github.com:example-org/example-repo.
 ```
 
 The Bun/TypeScript CLI is the primary interface for LLM agents. `--fetch` executes the provider metadata, diff, comments, commits, and CI fetches itself, then renders a readable PASS/FAIL review-gate comment with findings or a no-blockers statement plus title/state/draft status, diff size, comment count, commit count, CI summary, `posted_by`, and `live_posting`. Without `--no-comment`, the same gate comment is posted provider-native through authenticated `gh` or `glab`. GitHub uses `gh`. GitLab uses `glab` for authenticated posting and falls back to GitLab's public API only for no-comment public fetch reports.
+
+The installable CLI is the Bun package declared in `package.json`. The old Python package wrapper is retired; Python remains only for Claude Code slash-command compatibility helpers and legacy pytest coverage. `.gitattributes` marks those retained compatibility paths as Linguist-vendored so GitHub language presentation reflects the Bun/TypeScript-first CLI.
 
 Use `--smoke` to verify provider planning and prompt wiring without running agents or posting:
 
@@ -387,10 +390,7 @@ Agents are held to minimum quality standards:
 
 ### CI Pipeline
 
-The CI pipeline runs:
-1. **lint** - Markdown and Python linting
-2. **test** - Unit tests and integration tests
-3. **quality-gate** - Verify metrics meet thresholds
+The CI pipeline runs Bun tests/build plus the remaining Python compatibility tests for the Claude Code slash command.
 
 ## Development
 
@@ -402,7 +402,8 @@ samorev/
 │   ├── commands/
 │   │   └── review-mr.md     # Main review command (slash command)
 │   └── settings.json        # Claude Code permissions config
-├── .gitlab-ci.yml           # CI/CD pipeline configuration
+├── .gitattributes           # Linguist overrides for compatibility helpers
+├── src/                     # Bun/TypeScript CLI
 ├── agents/
 │   ├── security-reviewer.md      # OWASP, secrets, injection
 │   ├── bug-hunter.md             # Runtime bugs, logic errors
@@ -410,7 +411,7 @@ samorev/
 │   ├── guidelines-checker.md     # Project conventions
 │   ├── docs-reviewer.md          # Documentation review
 │   └── sqitch-migration-checker.md # Optional Sqitch migrations
-├── rules/                    # Optional project-specific and shared rules
+├── lib/                      # Python slash-command compatibility helpers
 ├── tests/                    # Testing framework
 │   ├── conftest.py          # Pytest configuration
 │   ├── test_agents.py       # Agent tests

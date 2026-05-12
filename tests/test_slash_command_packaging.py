@@ -136,6 +136,55 @@ def test_provider_planning_script_supports_github_and_gitlab_smoke_paths():
     assert "POST_COMMENT_COMMAND=" in gitlab.stdout
 
 
+def test_bun_package_replaces_obsolete_python_package_wrapper():
+    package_json = read("package.json")
+
+    assert '"bin":' in package_json
+    assert '"samorev": "./dist/cli.js"' in package_json
+    assert not (ROOT / "pyproject.toml").exists()
+    assert not (ROOT / "samorev" / "cli.py").exists()
+    assert not (ROOT / "samorev" / "__init__.py").exists()
+    assert not (ROOT / "samorev" / "py.typed").exists()
+
+
+def test_linguist_overrides_keep_compatibility_python_out_of_language_stats():
+    attributes = read(".gitattributes")
+
+    assert "lib/**/*.py linguist-vendored" in attributes
+    assert "tests/**/*.py linguist-vendored" in attributes
+    assert "tests/lib/**/*.sh linguist-vendored" in attributes
+    assert ".claude/commands/*.md linguist-documentation" in attributes
+    assert "agents/*.md linguist-documentation" in attributes
+
+    result = subprocess.run(
+        [
+            "git",
+            "check-attr",
+            "linguist-vendored",
+            "linguist-documentation",
+            "--",
+            "lib/provider_planning.py",
+            "tests/test_provider_planning.py",
+            "tests/lib/runner.sh",
+            ".claude/commands/review-mr.md",
+            "agents/bug-hunter.md",
+            "src/cli.ts",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "lib/provider_planning.py: linguist-vendored: set" in result.stdout
+    assert "tests/test_provider_planning.py: linguist-vendored: set" in result.stdout
+    assert "tests/lib/runner.sh: linguist-vendored: set" in result.stdout
+    assert ".claude/commands/review-mr.md: linguist-documentation: set" in result.stdout
+    assert "agents/bug-hunter.md: linguist-documentation: set" in result.stdout
+    assert "src/cli.ts: linguist-vendored: unspecified" in result.stdout
+    assert "src/cli.ts: linguist-documentation: unspecified" in result.stdout
+
+
 def test_install_docs_cover_prompt_pack_auth_provenance_and_tag_readiness():
     readme = read("README.md")
 
