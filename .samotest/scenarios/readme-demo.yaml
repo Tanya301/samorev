@@ -1,21 +1,22 @@
 id: readme-demo
-title: README demo GIF
+title: README real-output demo GIF
 owner: "@samorev"
-tags: ["docs", "demo", "gif"]
+tags: ["docs", "demo", "gif", "real-output"]
 priority: required
 target:
-  url: "http://127.0.0.1:41732/docs/demo.html"
+  url: "http://127.0.0.1:42732/docs/demo.html"
 recording:
   mode: browser
   duration_ms: 3500
+  output_path: docs/demo.gif
   preferred_formats: ["gif"]
 steps:
-  - id: capture-readme-demo
-    instruction: "Record the samorev README demo page."
-    expected: "The GIF shows fetch, review, gate, and pass states."
+  - id: capture-real-output-demo
+    instruction: "Record the README demo page rendered from real command output."
+    expected: "The GIF shows actual command output, not scripted product copy."
     evidence:
       - type: gif
         name: readme-demo
 result:
   required_observations:
-    - "The demo names the product and shows the review gate result."
+    - "The demo is generated from real command output captured for this repository."
