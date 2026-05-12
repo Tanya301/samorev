@@ -1,0 +1,21 @@
+id: readme-demo
+title: README demo GIF
+owner: "@samorev"
+tags: ["docs", "demo", "gif"]
+priority: required
+target:
+  url: "http://127.0.0.1:41732/docs/demo.html"
+recording:
+  mode: browser
+  duration_ms: 3500
+  preferred_formats: ["gif"]
+steps:
+  - id: capture-readme-demo
+    instruction: "Record the samorev README demo page."
+    expected: "The GIF shows fetch, review, gate, and pass states."
+    evidence:
+      - type: gif
+        name: readme-demo
+result:
+  required_observations:
+    - "The demo names the product and shows the review gate result."
