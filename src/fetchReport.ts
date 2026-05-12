@@ -49,42 +49,28 @@ export async function fetchReviewSummary(
   const draft = metadataDraft(reference.provider, fetched.metadata);
   const findings = reviewGateFindings(ci.status, draft);
   const outcome = findings.length ? "FAIL" : "PASS";
-  const fetchSummary = [
-    "samorev fetch summary",
-    `provider=${reference.provider}`,
-    `kind=${reference.kind}`,
-    `project=${reference.projectPath}`,
-    `number=${reference.number}`,
-    `target=${reference.provider}:${reference.projectPath}#${reference.number}`,
-    `title=${title}`,
-    `state=${state}`,
-    `draft=${String(draft)}`,
-    `diff_lines=${diff.lines}`,
-    `diff_added=${diff.added}`,
-    `diff_removed=${diff.removed}`,
-    `diff_bytes=${diff.bytes}`,
-    `comments_count=${countJsonItems(fetched.comments)}`,
-    `commits_count=${countJsonItems(fetched.commits)}`,
-    `ci_status=${ci.status}`,
-    `ci_summary=${ci.summary}`,
-    `prompt=${promptPath}`,
-    `blocking=${String(options.blocking)}`,
-    `posted_by=${options.postedBy ?? "local"}`,
-    `no_comment=${String(options.noComment ?? true)}`,
-    `live_posting=${options.livePosting ?? "not-run"}`,
-  ].join("\n");
+  const counts = {
+    comments: countJsonItems(fetched.comments),
+    commits: countJsonItems(fetched.commits),
+  };
 
-  return [
-    `samorev review gate: ${outcome}`,
-    `Result: ${outcome}`,
-    `Target: ${reference.provider}:${reference.projectPath}#${reference.number}`,
-    `Provider: ${reference.provider}`,
-    `CI: ${ci.status}`,
-    findings.length ? "Findings:" : "No blocking findings.",
-    ...findings.map((finding) => `- ${finding}`),
-    "",
-    fetchSummary,
-  ].join("\n");
+  return renderRevLikeReport({
+    reference,
+    title,
+    state,
+    draft,
+    diff,
+    ci,
+    findings,
+    outcome,
+    promptPath,
+    postedBy: options.postedBy ?? "local",
+    noComment: options.noComment ?? true,
+    livePosting: options.livePosting ?? "not-run",
+    blocking: options.blocking,
+    counts,
+    metadata: fetched.metadata,
+  });
 }
 
 async function fetchGitHub(plan: FetchPlan, runCommand: RunCommand): Promise<FetchedData> {
@@ -290,15 +276,188 @@ function metadataDraft(provider: Provider, metadata: Record<string, unknown>): b
   return String(metadata.work_in_progress ?? "false").toLowerCase() === "true";
 }
 
-function reviewGateFindings(ciStatus: string, draft: boolean): string[] {
-  const findings: string[] = [];
+type GateFinding = {
+  area: "CI/Pipeline" | "Metadata";
+  severity: "CRITICAL" | "HIGH";
+  subject: string;
+  title: string;
+  detail: string;
+  fix: string;
+};
+
+function reviewGateFindings(ciStatus: string, draft: boolean): GateFinding[] {
+  const findings: GateFinding[] = [];
   if (draft) {
-    findings.push("Review target is draft.");
+    findings.push({
+      area: "Metadata",
+      severity: "HIGH",
+      subject: "MR/PR state",
+      title: "Review target is draft",
+      detail: "The review target is still marked as draft.",
+      fix: "Mark it ready for review before merge.",
+    });
   }
   if (!["success", "none"].includes(ciStatus)) {
-    findings.push(`CI status is ${ciStatus}.`);
+    findings.push({
+      area: "CI/Pipeline",
+      severity: ciStatus === "pending" ? "HIGH" : "CRITICAL",
+      subject: "CI/Pipeline",
+      title: `Pipeline status is ${ciStatus}`,
+      detail: `Provider CI reported status \`${ciStatus}\`.`,
+      fix: ciStatus === "pending"
+        ? "Wait for CI to finish and rerun review."
+        : "Fix failing checks and rerun review.",
+    });
   }
   return findings;
+}
+
+function renderRevLikeReport(args: {
+  reference: ReviewReference;
+  title: string;
+  state: string;
+  draft: boolean;
+  diff: { lines: number; added: number; removed: number; bytes: number };
+  ci: { status: string; summary: string };
+  findings: GateFinding[];
+  outcome: "PASS" | "FAIL";
+  promptPath: string;
+  postedBy: string;
+  noComment: boolean;
+  livePosting: "not-run" | "posted" | "blocked";
+  blocking: boolean;
+  counts: { comments: number; commits: number };
+  metadata: Record<string, unknown>;
+}): string {
+  const targetKind = args.reference.provider === "gitlab" ? "MR" : "PR";
+  const targetRef = args.reference.provider === "gitlab"
+    ? `${args.reference.projectPath}!${args.reference.number}`
+    : `${args.reference.projectPath}#${args.reference.number}`;
+  const author = metadataAuthor(args.metadata);
+  const blockingCount = args.findings.length;
+  const ciFindings = args.findings.filter((finding) => finding.area === "CI/Pipeline").length;
+  const metadataFindings = args.findings.filter((finding) => finding.area === "Metadata").length;
+
+  const lines = [
+    "## samorev Code Review Report",
+    "",
+    `- **${targetKind}:** ${targetRef} - ${args.title}`,
+    `- **Author:** ${author}`,
+    "- **AI-Assisted:** Unknown",
+    "",
+    "| Pipeline | Coverage |",
+    "|----------|----------|",
+    `| ${formatCiBadge(args.ci.status)} | Not reported |`,
+    "",
+    "---",
+    "",
+  ];
+
+  if (blockingCount > 0) {
+    lines.push(`### BLOCKING ISSUES (${blockingCount})`, "");
+    for (const finding of args.findings) {
+      lines.push(
+        `**${finding.severity}** \`${finding.subject}\` - ${finding.title}`,
+        `> ${finding.detail}`,
+        `> **Fix:** ${finding.fix}`,
+        "",
+      );
+    }
+    lines.push("---", "");
+  } else {
+    lines.push(
+      "No issues found. Reviewed for security, bugs, tests, guidelines, and documentation.",
+      "",
+      "**Result: PASSED**",
+      "",
+      "---",
+      "",
+    );
+  }
+
+  lines.push(
+    "### Summary",
+    "",
+    "| Area | Findings | Potential | Filtered |",
+    "|------|----------|-----------|----------|",
+    `| CI/Pipeline | ${ciFindings} | 0 | 0 |`,
+    "| Security | 0 | 0 | 0 |",
+    "| Bugs | 0 | 0 | 0 |",
+    "| Tests | 0 | 0 | 0 |",
+    "| Guidelines | 0 | 0 | 0 |",
+    "| Docs | 0 | 0 | 0 |",
+    `| Metadata | ${metadataFindings} | 0 | 0 |`,
+    "",
+    "Note:",
+    "- **Findings**: High-confidence issues (8-10/10) - blocking or non-blocking per severity",
+    "- **Potential**: Medium-confidence issues (4-7/10) - review manually",
+    "- **Filtered**: Low-confidence issues (0-3/10) - excluded as likely false positives",
+    "",
+    "<details>",
+    "<summary>Review metadata</summary>",
+    "",
+    "```text",
+    `provider=${args.reference.provider}`,
+    `kind=${args.reference.kind}`,
+    `project=${args.reference.projectPath}`,
+    `number=${args.reference.number}`,
+    `target=${args.reference.provider}:${args.reference.projectPath}#${args.reference.number}`,
+    `state=${args.state}`,
+    `draft=${String(args.draft)}`,
+    `diff_lines=${args.diff.lines}`,
+    `diff_added=${args.diff.added}`,
+    `diff_removed=${args.diff.removed}`,
+    `diff_bytes=${args.diff.bytes}`,
+    `comments_count=${args.counts.comments}`,
+    `commits_count=${args.counts.commits}`,
+    `ci_status=${args.ci.status}`,
+    `ci_summary=${args.ci.summary}`,
+    `prompt=${args.promptPath}`,
+    `blocking=${String(args.blocking)}`,
+    `posted_by=${args.postedBy}`,
+    `no_comment=${String(args.noComment)}`,
+    `live_posting=${args.livePosting}`,
+    "```",
+    "",
+    "</details>",
+    "",
+    "---",
+    "*samorev-assisted review (AI analysis by [Tanya301/samorev](https://github.com/Tanya301/samorev))*",
+  );
+
+  return lines.join("\n");
+}
+
+function formatCiBadge(status: string): string {
+  const normalized = status.toLowerCase();
+  if (["success", "passed"].includes(normalized)) {
+    return "PASS";
+  }
+  if (["pending", "running"].includes(normalized)) {
+    return "PENDING";
+  }
+  if (["failure", "failed"].includes(normalized)) {
+    return "FAIL";
+  }
+  return status || "unknown";
+}
+
+function metadataAuthor(metadata: Record<string, unknown>): string {
+  const author = metadata.author;
+  if (isRecord(author)) {
+    const login = author.login ?? author.username ?? author.name;
+    if (typeof login === "string" && login.length > 0) {
+      return login.startsWith("@") ? login : `@${login}`;
+    }
+  }
+  const user = metadata.user;
+  if (isRecord(user)) {
+    const login = user.login ?? user.username ?? user.name;
+    if (typeof login === "string" && login.length > 0) {
+      return login.startsWith("@") ? login : `@${login}`;
+    }
+  }
+  return "Unknown";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

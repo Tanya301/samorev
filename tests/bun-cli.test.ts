@@ -7,6 +7,29 @@ import { parseReviewReference, planFetch } from "../src/providerPlanning";
 const repoRoot = import.meta.dir.replace(/\/tests$/, "");
 const fakeBin = join(repoRoot, ".tmp-bun-test-bin");
 const originalPath = process.env.PATH ?? "";
+const rawMetadataKeys = [
+  "provider=",
+  "kind=",
+  "project=",
+  "number=",
+  "target=",
+  "title=",
+  "state=",
+  "draft=",
+  "diff_lines=",
+  "diff_added=",
+  "diff_removed=",
+  "diff_bytes=",
+  "comments_count=",
+  "commits_count=",
+  "ci_status=",
+  "ci_summary=",
+  "prompt=",
+  "blocking=",
+  "posted_by=",
+  "no_comment=",
+  "live_posting=",
+];
 
 async function runSamorev(args: string[], extraEnv: Record<string, string> = {}) {
   return Bun.spawn({
@@ -55,27 +78,30 @@ describe("bun samorev CLI", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).not.toContain("Error:");
-    expect(result.stdout).toContain("samorev review gate: FAIL");
-    expect(result.stdout).toContain("Findings:");
-    expect(result.stdout).toContain("CI status is failure");
-    expect(result.stdout).toContain("samorev fetch summary");
-    expect(result.stdout).toContain("provider=github");
-    expect(result.stdout).toContain("kind=pr");
-    expect(result.stdout).toContain("project=example-org/example-repo");
-    expect(result.stdout).toContain("target=github:example-org/example-repo#17");
-    expect(result.stdout).toContain("title=Demo PR");
-    expect(result.stdout).toContain("state=OPEN");
-    expect(result.stdout).toContain("draft=false");
-    expect(result.stdout).toContain("diff_lines=3");
-    expect(result.stdout).toContain("diff_added=1");
-    expect(result.stdout).toContain("diff_removed=1");
-    expect(result.stdout).toContain("comments_count=2");
-    expect(result.stdout).toContain("commits_count=3");
-    expect(result.stdout).toContain("ci_status=failure");
-    expect(result.stdout).toContain("ci_summary=total=2 success=1 failure=1 pending=0 other=0");
-    expect(result.stdout).toContain("posted_by=local");
-    expect(result.stdout).toContain("no_comment=true");
-    expect(result.stdout).toContain("live_posting=not-run");
+    expect(result.stdout).toContain("## samorev Code Review Report");
+    expect(result.stdout).toContain("- **PR:** example-org/example-repo#17 - Demo PR");
+    expect(result.stdout).toContain("### BLOCKING ISSUES (1)");
+    expect(result.stdout).toContain("Pipeline status is failure");
+    expectRevReportShape(result.stdout);
+    expect(expectVisibleReport(result.stdout)).not.toContain("provider=github");
+    expect(expectVisibleReport(result.stdout)).not.toContain("ci_status=failure");
+    const metadata = expectMetadataDetails(result.stdout);
+    expect(metadata).toContain("provider=github");
+    expect(metadata).toContain("kind=pr");
+    expect(metadata).toContain("project=example-org/example-repo");
+    expect(metadata).toContain("target=github:example-org/example-repo#17");
+    expect(metadata).toContain("state=OPEN");
+    expect(metadata).toContain("draft=false");
+    expect(metadata).toContain("diff_lines=3");
+    expect(metadata).toContain("diff_added=1");
+    expect(metadata).toContain("diff_removed=1");
+    expect(metadata).toContain("comments_count=2");
+    expect(metadata).toContain("commits_count=3");
+    expect(metadata).toContain("ci_status=failure");
+    expect(metadata).toContain("ci_summary=total=2 success=1 failure=1 pending=0 other=0");
+    expect(metadata).toContain("posted_by=local");
+    expect(metadata).toContain("no_comment=true");
+    expect(metadata).toContain("live_posting=not-run");
   });
 
   it("posts GitHub fetch summary through authenticated gh", async () => {
@@ -93,20 +119,26 @@ describe("bun samorev CLI", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stderr).not.toContain("Error:");
     const postedBody = await readFile(postLog, "utf8");
-    expect(result.stdout).toContain("provider=github");
-    expect(result.stdout).toContain("target=github:example-org/example-repo#17");
-    expect(result.stdout).toContain("ci_status=failure");
-    expect(result.stdout).toContain("posted_by=gh");
-    expect(result.stdout).toContain("no_comment=false");
-    expect(result.stdout).toContain("live_posting=posted");
-    expect(postedBody).toContain("samorev fetch summary");
-    expect(postedBody).toContain("samorev review gate: FAIL");
-    expect(postedBody).toContain("Findings:");
-    expect(postedBody).toContain("CI status is failure");
-    expect(postedBody).toContain("provider=github");
-    expect(postedBody).toContain("target=github:example-org/example-repo#17");
-    expect(postedBody).toContain("posted_by=gh");
-    expect(postedBody).toContain("live_posting=posted");
+    expectRevReportShape(result.stdout);
+    expect(expectVisibleReport(result.stdout)).not.toContain("provider=github");
+    const stdoutMetadata = expectMetadataDetails(result.stdout);
+    expect(stdoutMetadata).toContain("provider=github");
+    expect(stdoutMetadata).toContain("target=github:example-org/example-repo#17");
+    expect(stdoutMetadata).toContain("ci_status=failure");
+    expect(stdoutMetadata).toContain("posted_by=gh");
+    expect(stdoutMetadata).toContain("no_comment=false");
+    expect(stdoutMetadata).toContain("live_posting=posted");
+    expect(postedBody).toContain("## samorev Code Review Report");
+    expect(postedBody).toContain("- **PR:** example-org/example-repo#17 - Demo PR");
+    expect(postedBody).toContain("### BLOCKING ISSUES (1)");
+    expect(postedBody).toContain("Pipeline status is failure");
+    expectRevReportShape(postedBody);
+    expect(expectVisibleReport(postedBody)).not.toContain("provider=github");
+    const postedMetadata = expectMetadataDetails(postedBody);
+    expect(postedMetadata).toContain("provider=github");
+    expect(postedMetadata).toContain("target=github:example-org/example-repo#17");
+    expect(postedMetadata).toContain("posted_by=gh");
+    expect(postedMetadata).toContain("live_posting=posted");
   });
 
   it("blocks GitHub posting when gh auth is unavailable", async () => {
@@ -124,11 +156,12 @@ describe("bun samorev CLI", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("Provider posting blocked");
     expect(result.stderr).toContain("gh auth status");
-    expect(result.stdout).toContain("provider=github");
-    expect(result.stdout).toContain("target=github:example-org/example-repo#17");
-    expect(result.stdout).toContain("ci_status=failure");
-    expect(result.stdout).toContain("posted_by=gh");
-    expect(result.stdout).toContain("live_posting=blocked");
+    const metadata = expectMetadataDetails(result.stdout);
+    expect(metadata).toContain("provider=github");
+    expect(metadata).toContain("target=github:example-org/example-repo#17");
+    expect(metadata).toContain("ci_status=failure");
+    expect(metadata).toContain("posted_by=gh");
+    expect(metadata).toContain("live_posting=blocked");
     await expect(readFile(postLog, "utf8")).rejects.toThrow();
   });
 
@@ -146,11 +179,12 @@ describe("bun samorev CLI", () => {
     );
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("samorev review gate: FAIL");
-    expect(result.stdout).toContain("Findings:");
-    expect(result.stdout).toContain("posted_by=local");
-    expect(result.stdout).toContain("no_comment=true");
-    expect(result.stdout).toContain("live_posting=not-run");
+    expect(result.stdout).toContain("## samorev Code Review Report");
+    expect(result.stdout).toContain("### BLOCKING ISSUES (1)");
+    const metadata = expectMetadataDetails(result.stdout);
+    expect(metadata).toContain("posted_by=local");
+    expect(metadata).toContain("no_comment=true");
+    expect(metadata).toContain("live_posting=not-run");
     await expect(readFile(postLog, "utf8")).rejects.toThrow();
   });
 
@@ -168,20 +202,27 @@ describe("bun samorev CLI", () => {
 
     expect(result.exitCode).toBe(0);
     const postedBody = await readFile(postLog, "utf8");
-    expect(result.stdout).toContain("samorev review gate: FAIL");
-    expect(result.stdout).toContain("provider=gitlab");
-    expect(result.stdout).toContain("target=gitlab:example-group/example-project#42");
-    expect(result.stdout).toContain("ci_status=failed");
-    expect(result.stdout).toContain("posted_by=glab");
-    expect(result.stdout).toContain("live_posting=posted");
-    expect(postedBody).toContain("samorev fetch summary");
-    expect(postedBody).toContain("samorev review gate: FAIL");
-    expect(postedBody).toContain("Findings:");
-    expect(postedBody).toContain("CI status is failed");
-    expect(postedBody).toContain("provider=gitlab");
-    expect(postedBody).toContain("target=gitlab:example-group/example-project#42");
-    expect(postedBody).toContain("posted_by=glab");
-    expect(postedBody).toContain("live_posting=posted");
+    expect(result.stdout).toContain("## samorev Code Review Report");
+    expect(result.stdout).toContain("- **MR:** example-group/example-project!42 - GitLab demo");
+    expectRevReportShape(result.stdout);
+    expect(expectVisibleReport(result.stdout)).not.toContain("provider=gitlab");
+    const stdoutMetadata = expectMetadataDetails(result.stdout);
+    expect(stdoutMetadata).toContain("provider=gitlab");
+    expect(stdoutMetadata).toContain("target=gitlab:example-group/example-project#42");
+    expect(stdoutMetadata).toContain("ci_status=failed");
+    expect(stdoutMetadata).toContain("posted_by=glab");
+    expect(stdoutMetadata).toContain("live_posting=posted");
+    expect(postedBody).toContain("## samorev Code Review Report");
+    expect(postedBody).toContain("- **MR:** example-group/example-project!42 - GitLab demo");
+    expect(postedBody).toContain("### BLOCKING ISSUES (1)");
+    expect(postedBody).toContain("Pipeline status is failed");
+    expectRevReportShape(postedBody);
+    expect(expectVisibleReport(postedBody)).not.toContain("provider=gitlab");
+    const postedMetadata = expectMetadataDetails(postedBody);
+    expect(postedMetadata).toContain("provider=gitlab");
+    expect(postedMetadata).toContain("target=gitlab:example-group/example-project#42");
+    expect(postedMetadata).toContain("posted_by=glab");
+    expect(postedMetadata).toContain("live_posting=posted");
   });
 
   it("blocks GitLab posting when glab auth is unavailable", async () => {
@@ -199,11 +240,12 @@ describe("bun samorev CLI", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("Provider posting blocked");
     expect(result.stderr).toContain("glab auth status");
-    expect(result.stdout).toContain("provider=gitlab");
-    expect(result.stdout).toContain("target=gitlab:example-group/example-project#42");
-    expect(result.stdout).toContain("ci_status=failed");
-    expect(result.stdout).toContain("posted_by=glab");
-    expect(result.stdout).toContain("live_posting=blocked");
+    const metadata = expectMetadataDetails(result.stdout);
+    expect(metadata).toContain("provider=gitlab");
+    expect(metadata).toContain("target=gitlab:example-group/example-project#42");
+    expect(metadata).toContain("ci_status=failed");
+    expect(metadata).toContain("posted_by=glab");
+    expect(metadata).toContain("live_posting=blocked");
     await expect(readFile(postLog, "utf8")).rejects.toThrow();
   });
 
@@ -244,26 +286,31 @@ describe("bun samorev CLI", () => {
       },
     });
 
-    expect(summary).toContain("provider=gitlab");
-    expect(summary).toContain("samorev review gate: FAIL");
-    expect(summary).toContain("kind=mr");
-    expect(summary).toContain("project=example-group/example-project");
-    expect(summary).toContain("target=gitlab:example-group/example-project#42");
-    expect(summary).toContain("number=42");
-    expect(summary).toContain("title=GitLab fallback demo");
-    expect(summary).toContain("state=opened");
-    expect(summary).toContain("draft=false");
-    expect(summary).toContain("diff_lines=4");
-    expect(summary).toContain("diff_added=1");
-    expect(summary).toContain("diff_removed=1");
-    expect(summary).toContain("comments_count=2");
-    expect(summary).toContain("commits_count=3");
-    expect(summary).toContain("ci_status=failed");
-    expect(summary).toContain("ci_summary=pipeline_status=failed");
-    expect(summary).toContain("blocking=true");
-    expect(summary).toContain("posted_by=local");
-    expect(summary).toContain("no_comment=true");
-    expect(summary).toContain("live_posting=not-run");
+    expect(summary).toContain("## samorev Code Review Report");
+    expect(summary).toContain("- **MR:** example-group/example-project!42 - GitLab fallback demo");
+    expect(summary).toContain("### BLOCKING ISSUES (1)");
+    expectRevReportShape(summary);
+    expect(expectVisibleReport(summary)).not.toContain("provider=gitlab");
+    const metadata = expectMetadataDetails(summary);
+    expect(metadata).toContain("provider=gitlab");
+    expect(metadata).toContain("kind=mr");
+    expect(metadata).toContain("project=example-group/example-project");
+    expect(metadata).toContain("target=gitlab:example-group/example-project#42");
+    expect(metadata).toContain("number=42");
+    expect(summary).toContain("Pipeline status is failed");
+    expect(metadata).toContain("state=opened");
+    expect(metadata).toContain("draft=false");
+    expect(metadata).toContain("diff_lines=4");
+    expect(metadata).toContain("diff_added=1");
+    expect(metadata).toContain("diff_removed=1");
+    expect(metadata).toContain("comments_count=2");
+    expect(metadata).toContain("commits_count=3");
+    expect(metadata).toContain("ci_status=failed");
+    expect(metadata).toContain("ci_summary=pipeline_status=failed");
+    expect(metadata).toContain("blocking=true");
+    expect(metadata).toContain("posted_by=local");
+    expect(metadata).toContain("no_comment=true");
+    expect(metadata).toContain("live_posting=not-run");
   });
 
   it("keeps GitLab public fallback usable when notes are private", async () => {
@@ -292,15 +339,19 @@ describe("bun samorev CLI", () => {
       },
     });
 
-    expect(summary).toContain("provider=gitlab");
-    expect(summary).toContain("samorev review gate: PASS");
-    expect(summary).toContain("No blocking findings.");
-    expect(summary).toContain("title=Public MR");
-    expect(summary).toContain("comments_count=0");
-    expect(summary).toContain("commits_count=1");
-    expect(summary).toContain("ci_status=success");
-    expect(summary).toContain("no_comment=true");
-    expect(summary).toContain("live_posting=not-run");
+    expect(summary).toContain("## samorev Code Review Report");
+    expect(summary).toContain("- **MR:** example-group/example-project!42 - Public MR");
+    expect(summary).toContain("No issues found. Reviewed for security, bugs, tests, guidelines, and documentation.");
+    expect(summary).toContain("**Result: PASSED**");
+    expectRevReportShape(summary);
+    expect(expectVisibleReport(summary)).not.toContain("provider=gitlab");
+    const metadata = expectMetadataDetails(summary);
+    expect(metadata).toContain("provider=gitlab");
+    expect(metadata).toContain("comments_count=0");
+    expect(metadata).toContain("commits_count=1");
+    expect(metadata).toContain("ci_status=success");
+    expect(metadata).toContain("no_comment=true");
+    expect(metadata).toContain("live_posting=not-run");
   });
 
   it("plans numeric GitHub references from remote URL", () => {
@@ -337,6 +388,30 @@ describe("bun samorev CLI", () => {
     expect(spec).toContain("NikolayS/samospec#165");
   });
 });
+
+function expectRevReportShape(report: string) {
+  expect(report.startsWith("## samorev Code Review Report")).toBe(true);
+  expect(report).toContain("## samorev Code Review Report");
+  expect(report).toContain("| Pipeline | Coverage |");
+  expect(report).toContain("|----------|----------|");
+  expect(report).toContain("### Summary");
+  expect(report).toContain("| Area | Findings | Potential | Filtered |");
+  expect(report).toContain("Note:");
+  expect(report).toContain("*samorev-assisted review (AI analysis by [Tanya301/samorev](https://github.com/Tanya301/samorev))*");
+  for (const key of rawMetadataKeys) {
+    expect(expectVisibleReport(report)).not.toContain(key);
+  }
+}
+
+function expectVisibleReport(report: string): string {
+  return report.replace(/<details>[\s\S]*?<\/details>/g, "");
+}
+
+function expectMetadataDetails(report: string): string {
+  const match = report.match(/<details>\s*<summary>Review metadata<\/summary>\s*```text\n([\s\S]*?)\n```\s*<\/details>/);
+  expect(match).not.toBeNull();
+  return match?.[1] ?? "";
+}
 
 async function writeGitHubFake(postLog?: string) {
   await writeFile(
