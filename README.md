@@ -2,6 +2,8 @@
 
 samorev is a CLI-first review tool for GitHub Pull Requests and GitLab Merge Requests. The `samorev review` command is a thin wrapper around the same provider-planning core and review prompt used by the Claude Code `/review-mr` command, so LLM agents can invoke reviews non-interactively without forking the review system. The Claude Code prompt/command pack remains available for interactive use.
 
+![samorev demo](docs/demo.gif)
+
 ## Features
 
 - **Automatic self-update**: Checks for updates before each review (supports standalone checkout and project-local installations)

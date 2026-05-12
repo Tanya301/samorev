@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>samorev Demo</title>
+    <style>
+      body { margin: 0; background: #052e2b; color: #ecfeff; font-family: Inter, system-ui, sans-serif; }
+      main { min-height: 100vh; display: grid; place-items: center; padding: 32px; }
+      .demo { width: min(900px, 100%); display: grid; gap: 18px; }
+      h1 { margin: 0; font-size: 44px; letter-spacing: 0; }
+      p { margin: 0; color: #ccfbf1; font-size: 18px; }
+      .panel { border: 1px solid #2dd4bf66; border-radius: 16px; background: #042f2e; padding: 24px; box-shadow: 0 24px 70px #0008; }
+      .row { display: grid; grid-template-columns: 170px 1fr; gap: 18px; align-items: center; opacity: 0; animation: reveal 8s infinite; margin: 16px 0; }
+      .row:nth-child(2) { animation-delay: 1.4s; }
+      .row:nth-child(3) { animation-delay: 2.8s; }
+      .row:nth-child(4) { animation-delay: 4.2s; }
+      .label { color: #5eead4; font: 700 15px ui-monospace, monospace; }
+      .value { background: #022c22; border: 1px solid #115e59; border-radius: 10px; padding: 12px 14px; font: 16px ui-monospace, monospace; }
+      @keyframes reveal { 0%, 10% { opacity: 0; transform: translateX(-8px); } 18%, 82% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="demo">
+        <h1>samorev</h1>
+        <p>A CLI review gate for GitHub PRs and GitLab MRs.</p>
+        <div class="panel">
+          <div class="row"><div class="label">fetch</div><div class="value">provider=github, diff=ready, ci=success</div></div>
+          <div class="row"><div class="label">review</div><div class="value">security, bugs, tests, docs, guidelines</div></div>
+          <div class="row"><div class="label">gate</div><div class="value">samorev review gate: PASS</div></div>
+          <div class="row"><div class="label">result</div><div class="value">No blocking findings. Ready for approval.</div></div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
