@@ -166,7 +166,7 @@ The repository includes a `.claude/settings.json` file that configures safe defa
 - **Allowed**: Git, gh, glab, common dev tools (node, python, go, docker, psql, sqitch), file operations, web fetch
 - **Denied**: Destructive commands (rm, sudo), network tools that bypass logging (curl, wget), access to secrets (.env*, secrets/**)
 
-### Per-repository config (`.rev.yml`) - planned feature
+### Per-repository config (`.samo/config.yaml`) - planned feature
 
 > **Note:** Configuration file support is a planned feature and not yet implemented. See the project roadmap for updates.
 
@@ -429,7 +429,9 @@ samorev/
 
 ## Optional project rules
 
-samorev can load optional project-specific rules from the `rules/` directory and include them in the Guidelines Checker agent. Rules can cover:
+samorev should follow the shared Samo repository layout: visible review policy and project rules live under `samo/`, while machine config lives under `.samo/`. For example, teams can keep `samo/review-policy.md` and `samo/rules/*.mdc` under review, with `.samo/config.yaml` pointing at those files. Legacy `rules/rules/*.mdc` files remain compatible during migration.
+
+Rules can cover:
 
 - Git commit standards (Conventional Commits)
 - SQL style guide

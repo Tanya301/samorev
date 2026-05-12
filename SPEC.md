@@ -15,6 +15,15 @@ Make `samorev` a Bun/TypeScript CLI that LLM agents can run from a checkout to f
 - Do not require hosted services, databases, or non-git state.
 - Do not make Python the primary CLI surface for new users.
 
+## 2.1 Repository Layout Convention
+
+`samorev` follows the shared Samo repository layout:
+
+- `samo/` contains visible, reviewable project knowledge such as review policy, tool descriptions, sprint notes, and optional rule files.
+- `.samo/` contains machine config, cache, runtime state, and generated local artifacts.
+
+Repository-specific review behavior should be readable from `samo/review-policy.md` or `samo/rules/*.mdc`, with `.samo/config.yaml` carrying pointers and tool settings. Legacy `.rev.yml` and `rules/rules/*.mdc` inputs remain compatibility paths during migration.
+
 ## 3. Primary Workflows
 
 ### Checkout Demo
