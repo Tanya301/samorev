@@ -1,0 +1,7 @@
+# samorev is a Bun/TypeScript-first CLI. Python files are retained for
+# Claude Code slash-command compatibility and legacy pytest smoke coverage.
+lib/**/*.py linguist-vendored
+tests/**/*.py linguist-vendored
+tests/lib/**/*.sh linguist-vendored
+.claude/commands/*.md linguist-documentation
+agents/*.md linguist-documentation

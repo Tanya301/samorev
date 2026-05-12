@@ -160,11 +160,11 @@ Every PR changing CLI behavior must include inline evidence, not only links:
 - Posted provider-native bodies are PASS/FAIL review-gate comments, not raw fetch summaries.
 - Missing provider auth exits non-zero with a clear blocker and `live_posting=blocked`.
 - `--no-comment` fetch/report behavior never invokes provider posting.
-- Existing Python compatibility tests for slash-command packaging continue to pass until that path is fully delegated or retired.
+- Existing Python compatibility tests for slash-command packaging continue to pass until that path is fully delegated.
+- Obsolete Python package wrapper paths are absent; retained Python compatibility helpers are excluded from GitHub language stats through checked Linguist attributes.
 - README documents Bun as the primary CLI workflow.
 
 ## 9. Open Follow-Ups
 
-- Decide whether to retire the Python CLI wrapper or keep it as a compatibility shim for one release.
 - Delegate `/review-mr` provider planning directly to the Bun CLI after installed-path behavior is proven.
 - Add release provenance for the Bun package before the first public tag.
