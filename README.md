@@ -25,7 +25,7 @@ samorev has two surfaces that check **different things**. Pick the right one:
 
 ## Features
 
-- **Provider scope**: GitHub PR operations via `gh`, GitLab MR operations via `glab`, with a GitLab public REST API fallback for public MRs.
+- **Provider scope**: Plans GitHub PR operations via `gh` and GitLab MR operations via `glab`, with a GitLab public REST API fallback for public MRs.
 - **CLI review-gate** (`samorev review --fetch`): PASS/FAIL based on CI status and draft state, rendered as a postable Markdown report with a machine-readable metadata block.
 - **Parallel multi-agent review** (`/review-mr` slash command): 5 specialized agents analyze code simultaneously, with optional repository-specific agents.
 - **Confidence scoring** (`/review-mr`): rates each finding 0-10, filtering likely false positives.
