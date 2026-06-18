@@ -1,18 +1,37 @@
 # samorev - automated code review
 
-samorev is a CLI-first review tool for GitHub Pull Requests and GitLab Merge Requests. The `samorev review` command is a thin wrapper around the same provider-planning core and review prompt used by the Claude Code `/review-mr` command, so LLM agents can invoke reviews non-interactively without forking the review system. The Claude Code prompt/command pack remains available for interactive use.
+samorev is a CLI-first review tool for GitHub Pull Requests and GitLab Merge Requests. The `samorev review` Bun CLI shares the provider-planning core and review prompt used by the Claude Code `/review-mr` command, so agents can invoke reviews non-interactively without forking the review system. The Claude Code prompt/command pack remains available for interactive use.
 
 ![samorev demo](docs/demo.gif)
 
+> **Operating samorev from a bot?** Read [`docs/bot-operation.md`](docs/bot-operation.md)
+> — the autonomous runbook (install, credential checklist, full command surface,
+> verdict parsing) — and [`docs/verdict-parsing.md`](docs/verdict-parsing.md) for
+> the machine-readable output grammar.
+
+## Two review surfaces (important)
+
+samorev has two surfaces that check **different things**. Pick the right one:
+
+- **Bun CLI — `samorev review`** (the surface a bot runs). A deterministic
+  provider-fetch + **review-gate**. With `--fetch` it pulls PR/MR metadata, diff,
+  comments, commits, and CI status and renders a **PASS/FAIL** report whose gate
+  is **CI status + draft state only**. It does **not** run the AI review agents
+  itself — the Security/Bugs/Tests/Guidelines/Docs rows are always `0` from the
+  CLI. See [`docs/bot-operation.md`](docs/bot-operation.md).
+- **Claude Code slash command — `/review-mr`** (interactive). Runs the 5–6
+  parallel LLM agents below for actual code analysis, plus CI, metadata, linked
+  issue, and optional SOC2 checks. Requires a Claude Code session.
+
 ## Features
 
-- **Automatic self-update**: Checks for updates before each review (supports standalone checkout and project-local installations)
-- **Parallel multi-agent review**: 5 specialized agents analyze code simultaneously, with optional repository-specific agents
-- **Provider scope**: Plans GitHub PR operations via `gh` and GitLab MR operations via `glab`
-- **Optional rules integration**: Loads optional project-specific rules when a repository provides them
-- **Confidence scoring**: Rates each finding 0-10, filtering out likely false positives
-- **Three-tier findings**: Categorizes into blocking, non-blocking, and potential issues
-- **Sqitch migration validation**: Optionally ensures PostgreSQL schema changes have proper migrations
+- **Provider scope**: GitHub PR operations via `gh`, GitLab MR operations via `glab`, with a GitLab public REST API fallback for public MRs.
+- **CLI review-gate** (`samorev review --fetch`): PASS/FAIL based on CI status and draft state, rendered as a postable Markdown report with a machine-readable metadata block.
+- **Parallel multi-agent review** (`/review-mr` slash command): 5 specialized agents analyze code simultaneously, with optional repository-specific agents.
+- **Confidence scoring** (`/review-mr`): rates each finding 0-10, filtering likely false positives.
+- **Three-tier findings** (`/review-mr`): blocking, non-blocking, and potential issues.
+- **Optional rules integration** (`/review-mr`): loads optional project-specific rules when a repository provides them.
+- **Sqitch migration validation** (`/review-mr`, optional): ensures PostgreSQL schema changes have proper migrations.
 
 ## Agents
 
@@ -29,17 +48,34 @@ samorev is a CLI-first review tool for GitHub Pull Requests and GitLab Merge Req
 
 ### Prerequisites
 
-1. **Bun** for the primary `samorev` CLI.
-2. **Python 3.11+** for the current Claude Code slash-command compatibility helpers.
-3. **Claude Code** (latest stable version recommended) installed and configured for slash-command review use.
-4. **GitHub CLI** authenticated when reviewing GitHub PRs:
+1. **Bun** (tested with 1.3.x) for the primary `samorev` CLI. No Node runtime is required for the CLI.
+2. **GitHub CLI** (`gh`) authenticated when reviewing GitHub PRs:
    ```bash
    gh auth login
    ```
-5. **GitLab CLI** authenticated when reviewing GitLab MRs:
+3. **GitLab CLI** (`glab`) authenticated when reviewing GitLab MRs (public GitLab MRs work without it via the public REST API fallback):
    ```bash
    glab auth login
    ```
+4. **Python 3.11+** and **jq** — only for the Claude Code `/review-mr` slash command and the Python compatibility tests; the Bun CLI does not need them.
+5. **Claude Code** — only for the `/review-mr` slash command (Surface B).
+
+### Credential / setup checklist
+
+The Bun CLI authenticates **through the `gh`/`glab` CLI token stores** — it does
+not read provider tokens from environment variables itself.
+
+| What | How to set | Required for |
+|------|-----------|--------------|
+| GitHub auth | `gh auth login` (scopes: `repo`; add `read:org` for org-private, `workflow` for Actions logs) | GitHub PR fetch + posting |
+| GitLab auth | `glab auth login` (scope: `api`, or `read_api` for `--no-comment` only) | Authenticated GitLab MR fetch + posting |
+| GitLab public MRs | nothing — public REST API fallback | Read-only public GitLab MR fetch |
+| `GITLAB_TOKEN` / `GITLAB_HOST` | env vars | **Slash command only** — `lib/review_memory.py` prior-context fetch |
+
+**Not needed to operate samorev:** `ANTHROPIC_API_KEY` is used only by the
+optional agent-quality test suite (`pytest -m api`), never by a review run.
+`OPENAI_API_KEY` is not used anywhere. Never write tokens into committed files,
+agent briefs, or posted comments — use the CLI auth stores and env-var names only.
 
 ### CLI installation
 
@@ -78,6 +114,8 @@ bun run samorev review 123 --remote-url git@github.com:example-org/example-repo.
 ```
 
 The Bun/TypeScript CLI is the primary interface for LLM agents. `--fetch` executes the provider metadata, diff, comments, commits, and CI fetches itself, then renders a readable PASS/FAIL review-gate comment with findings or a no-blockers statement plus title/state/draft status, diff size, comment count, commit count, CI summary, `posted_by`, and `live_posting`. Without `--no-comment`, the same gate comment is posted provider-native through authenticated `gh` or `glab`. GitHub uses `gh`. GitLab uses `glab` for authenticated posting and falls back to GitLab's public API only for no-comment public fetch reports.
+
+> **Bot verdict parsing:** a successful `--fetch` exits `0` for **both** PASS and FAIL — the exit code reflects whether the fetch ran, not the verdict. Parse the report body: `**Result: PASSED**` means PASS, a `### BLOCKING ISSUES (N)` header means FAIL. `--blocking` only records `blocking=true` in the output; it does **not** change the CLI exit code today (exit-on-findings is deferred — see SPEC §4). Full grammar: [`docs/verdict-parsing.md`](docs/verdict-parsing.md).
 
 The installable CLI is the Bun package declared in `package.json`. The old Python package wrapper is retired; Python remains only for Claude Code slash-command compatibility helpers and legacy pytest coverage. `.gitattributes` marks those retained compatibility paths as Linguist-vendored so GitHub language presentation reflects the Bun/TypeScript-first CLI.
 
@@ -118,7 +156,11 @@ git clone https://github.com/Tanya301/samorev.git
 
 The `/review-mr` command will be available when running Claude Code from within the samorev directory or any project that includes samorev as a submodule.
 
-## Usage
+## Usage (Claude Code `/review-mr` slash command)
+
+The flags below apply to the **slash command** (Surface B). For the Bun CLI flags
+and exit semantics, see the [CLI installation](#cli-installation) section above
+and [`docs/bot-operation.md`](docs/bot-operation.md).
 
 ```bash
 # Review a GitLab MR by URL through Claude Code
