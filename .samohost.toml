@@ -11,7 +11,7 @@
 
 name        = "samorev"
 repo        = "Tanya301/samorev"
-branch      = "samo-site"
+branch      = "main"
 appDir      = "/opt/samorev/app"
 buildCmd    = "true"
 healthUrl   = "https://samorev.samo.team/"
