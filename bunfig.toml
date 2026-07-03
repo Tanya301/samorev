@@ -1,0 +1,5 @@
+[test]
+# Only run Bun unit tests from tests/. The e2e/ directory contains Playwright
+# specs that use @playwright/test — they must run via `npx playwright test`,
+# not via Bun's test runner (which cannot resolve @playwright/test).
+root = "./tests"
