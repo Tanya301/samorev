@@ -67,19 +67,18 @@ async function review(args: ReviewArgs): Promise<number> {
   if (args.fetch) {
     try {
       if (args.noComment) {
-        console.log(
-          await fetchReviewSummary(reference, plan, relative(repoRoot, promptPath), {
-            blocking: args.blocking,
-            noComment: true,
-            postedBy: "local",
-            livePosting: "not-run",
-          }),
-        );
-        return 0;
+        const { report, outcome } = await fetchReviewSummary(reference, plan, relative(repoRoot, promptPath), {
+          blocking: args.blocking,
+          noComment: true,
+          postedBy: "local",
+          livePosting: "not-run",
+        });
+        console.log(report);
+        return args.blocking && outcome === "FAIL" ? 1 : 0;
       }
 
       const tool = postingTool(reference);
-      const blockedSummary = await fetchReviewSummary(reference, plan, relative(repoRoot, promptPath), {
+      const { report: blockedReport } = await fetchReviewSummary(reference, plan, relative(repoRoot, promptPath), {
         blocking: args.blocking,
         noComment: false,
         postedBy: tool,
@@ -90,22 +89,22 @@ async function review(args: ReviewArgs): Promise<number> {
         await assertProviderAuth(reference);
       } catch (error) {
         if (error instanceof PostingError) {
-          console.log(blockedSummary);
+          console.log(blockedReport);
           console.error(error.message);
           return 1;
         }
         throw error;
       }
 
-      const postedSummary = await fetchReviewSummary(reference, plan, relative(repoRoot, promptPath), {
+      const { report: postedReport, outcome: postedOutcome } = await fetchReviewSummary(reference, plan, relative(repoRoot, promptPath), {
         blocking: args.blocking,
         noComment: false,
         postedBy: tool,
         livePosting: "posted",
       });
-      await postProviderSummary(reference, plan, postedSummary);
-      console.log(postedSummary);
-      return 0;
+      await postProviderSummary(reference, plan, postedReport);
+      console.log(postedReport);
+      return args.blocking && postedOutcome === "FAIL" ? 1 : 0;
     } catch (error) {
       if (error instanceof FetchError) {
         console.error(`Error: ${error.message}`);
