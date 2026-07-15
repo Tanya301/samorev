@@ -19,6 +19,13 @@ type FetchedData = {
 type RunCommand = (command: string[]) => Promise<string>;
 type HttpJson = (url: string) => Promise<unknown>;
 
+export type ReviewOutcome = "PASS" | "FAIL";
+
+export type FetchReviewResult = {
+  report: string;
+  outcome: ReviewOutcome;
+};
+
 export async function fetchReviewSummary(
   reference: ReviewReference,
   plan: FetchPlan,
@@ -31,7 +38,7 @@ export async function fetchReviewSummary(
     postedBy?: string;
     livePosting?: "not-run" | "posted" | "blocked";
   } = { blocking: false },
-): Promise<string> {
+): Promise<FetchReviewResult> {
   const runCommand = options.runCommand ?? runText;
   const httpJson = options.httpJson ?? fetchJson;
   const fetched = reference.provider === "github"
@@ -48,13 +55,13 @@ export async function fetchReviewSummary(
   const state = String(fetched.metadata.state ?? fetched.metadata.merge_status ?? "unknown");
   const draft = metadataDraft(reference.provider, fetched.metadata);
   const findings = reviewGateFindings(ci.status, draft);
-  const outcome = findings.length ? "FAIL" : "PASS";
+  const outcome: ReviewOutcome = findings.length ? "FAIL" : "PASS";
   const counts = {
     comments: countJsonItems(fetched.comments),
     commits: countJsonItems(fetched.commits),
   };
 
-  return renderRevLikeReport({
+  const report = renderRevLikeReport({
     reference,
     title,
     state,
@@ -71,6 +78,8 @@ export async function fetchReviewSummary(
     counts,
     metadata: fetched.metadata,
   });
+
+  return { report, outcome };
 }
 
 async function fetchGitHub(plan: FetchPlan, runCommand: RunCommand): Promise<FetchedData> {

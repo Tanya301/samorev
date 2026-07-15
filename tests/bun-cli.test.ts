@@ -253,7 +253,7 @@ describe("bun samorev CLI", () => {
     const reference = parseReviewReference("https://gitlab.com/example-group/example-project/-/merge_requests/42");
     const plan = planFetch(reference);
 
-    const summary = await fetchReviewSummary(reference, plan, ".claude/commands/review-mr.md", {
+    const { report: summary } = await fetchReviewSummary(reference, plan, ".claude/commands/review-mr.md", {
       blocking: true,
       runCommand: async () => {
         throw new FetchError("glab unavailable");
@@ -317,7 +317,7 @@ describe("bun samorev CLI", () => {
     const reference = parseReviewReference("https://gitlab.com/example-group/example-project/-/merge_requests/42");
     const plan = planFetch(reference);
 
-    const summary = await fetchReviewSummary(reference, plan, ".claude/commands/review-mr.md", {
+    const { report: summary } = await fetchReviewSummary(reference, plan, ".claude/commands/review-mr.md", {
       blocking: false,
       runCommand: async () => {
         throw new FetchError("glab unavailable");
