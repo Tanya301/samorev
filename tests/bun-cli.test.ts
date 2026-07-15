@@ -354,6 +354,52 @@ describe("bun samorev CLI", () => {
     expect(metadata).toContain("live_posting=not-run");
   });
 
+  it("exits non-zero when --blocking and FAIL verdict (no-comment path)", async () => {
+    await writeGitHubFake();
+
+    // Without --blocking: exit 0 even on FAIL verdict (existing contract must stay)
+    const noBlockResult = await output(
+      await runSamorev([
+        "review",
+        "https://github.com/example-org/example-repo/pull/17",
+        "--no-comment",
+        "--fetch",
+      ]),
+    );
+    expect(noBlockResult.exitCode).toBe(0);
+    expect(noBlockResult.stdout).toContain("### BLOCKING ISSUES (1)");
+
+    // With --blocking: must exit non-zero when verdict is FAIL
+    const blockResult = await output(
+      await runSamorev([
+        "review",
+        "https://github.com/example-org/example-repo/pull/17",
+        "--no-comment",
+        "--fetch",
+        "--blocking",
+      ]),
+    );
+    expect(blockResult.exitCode).not.toBe(0);
+    expect(blockResult.stdout).toContain("### BLOCKING ISSUES (1)");
+    expect(blockResult.stdout).toContain("Pipeline status is failure");
+  });
+
+  it("exits zero when --blocking but verdict is PASS", async () => {
+    await writeGitHubPassFake();
+
+    const result = await output(
+      await runSamorev([
+        "review",
+        "https://github.com/example-org/example-repo/pull/17",
+        "--no-comment",
+        "--fetch",
+        "--blocking",
+      ]),
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("**Result: PASSED**");
+  });
+
   it("plans numeric GitHub references from remote URL", () => {
     const reference = parseReviewReference("17", "git@github.com:example-org/example-repo.git");
     const plan = planFetch(reference);
@@ -439,6 +485,32 @@ if (args.slice(0, 3).join(" ") === "pr view 17") {
   const index = args.indexOf("--body");
   const body = args[index + 1] ?? "";
   await Bun.write(${JSON.stringify(postLog ?? join(fakeBin, "unexpected-github-post.txt"))}, body);
+} else {
+  console.error("unexpected gh args: " + JSON.stringify(args));
+  process.exit(42);
+}
+`,
+    { mode: 0o755 },
+  );
+}
+
+async function writeGitHubPassFake() {
+  await writeFile(
+    join(fakeBin, "gh"),
+    `#!/usr/bin/env bun
+const args = Bun.argv.slice(2);
+if (args.slice(0, 3).join(" ") === "pr view 17") {
+  console.log(JSON.stringify({ title: "Demo PR", state: "OPEN", isDraft: false }));
+} else if (args.slice(0, 3).join(" ") === "pr diff 17") {
+  Bun.write(Bun.stdout, "diff --git a/app.ts b/app.ts\\n+console.log('demo')\\n-old = true\\n");
+} else if (args.slice(0, 2).join(" ") === "api repos/example-org/example-repo/issues/17/comments") {
+  console.log(JSON.stringify([{ body: "first" }, { body: "second" }]));
+} else if (args.slice(0, 2).join(" ") === "api repos/example-org/example-repo/pulls/17/commits") {
+  console.log(JSON.stringify([{ sha: "abc" }, { sha: "def" }, { sha: "ghi" }]));
+} else if (args.slice(0, 2).join(" ") === "api repos/example-org/example-repo/commits/pull/17/head/check-runs") {
+  console.log(JSON.stringify({ total_count: 2, check_runs: [{ name: "unit", conclusion: "success" }, { name: "lint", conclusion: "success" }] }));
+} else if (args.slice(0, 2).join(" ") === "auth status") {
+  console.error("Logged in to github.com");
 } else {
   console.error("unexpected gh args: " + JSON.stringify(args));
   process.exit(42);
