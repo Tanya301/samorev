@@ -35,11 +35,18 @@ export type FetchReviewResult = {
 
 /** Per-area finding counts parsed from LLM output. */
 type LlmFindings = {
+  /** High-confidence findings (confidence 8-10): appear in Findings column */
   security: number;
   bugs: number;
   tests: number;
   guidelines: number;
   docs: number;
+  /** Medium-confidence findings (confidence 4-7): appear in Potential column */
+  potentialSecurity: number;
+  potentialBugs: number;
+  potentialTests: number;
+  potentialGuidelines: number;
+  potentialDocs: number;
   /** Individual finding lines for the BLOCKING section */
   blockingItems: string[];
 };
@@ -86,10 +93,12 @@ export async function fetchReviewSummary(
 
   // Invoke claude -p with the actual diff; fail-closed on any error.
   let llmFindings: LlmFindings;
+  let llmUsed = false;
   try {
     const prompt = buildReviewPrompt(fetched.diff, title, String(fetched.metadata.description ?? fetched.metadata.body ?? ""));
     const llmOutput = await claudeRunner(prompt);
     llmFindings = parseLlmFindings(llmOutput);
+    llmUsed = true;
   } catch (_err) {
     // Fail-closed: if the LLM runner fails we must not auto-PASS.
     llmFindings = {
@@ -98,6 +107,11 @@ export async function fetchReviewSummary(
       tests: 0,
       guidelines: 0,
       docs: 0,
+      potentialSecurity: 0,
+      potentialBugs: 0,
+      potentialTests: 0,
+      potentialGuidelines: 0,
+      potentialDocs: 0,
       blockingItems: ["LLM reviewer unavailable — treating as FAIL (fail-closed)"],
     };
   }
@@ -117,6 +131,7 @@ export async function fetchReviewSummary(
     ci,
     findings: gateFindings,
     llmFindings,
+    llmUsed,
     outcome,
     promptPath,
     postedBy: options.postedBy ?? "local",
@@ -134,16 +149,110 @@ export async function fetchReviewSummary(
 // LLM invocation — claude -p subprocess (OAuth only, no ANTHROPIC_API_KEY)
 // ──────────────────────────────────────────────────────────────────────────────
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Generated/vendored file detection — these paths are filtered from diff CONTENT
+// before applying the char budget so real source+test files get the full budget.
+// Their file names are still listed so the model knows they changed.
+// ──────────────────────────────────────────────────────────────────────────────
+
+const GENERATED_PATH_PATTERNS: RegExp[] = [
+  /^dist\//,
+  /^build\//,
+  /^out\//,
+  /^\.next\//,
+  /^node_modules\//,
+  /\.min\.js$/,
+  /\.min\.css$/,
+  /\.map$/,
+  /\.snap$/,
+  /^package-lock\.json$/,
+  /^yarn\.lock$/,
+  /^pnpm-lock\.yaml$/,
+  /^bun\.lock(b)?$/,
+  /\.lock$/,
+];
+
+function isGeneratedPath(filePath: string): boolean {
+  return GENERATED_PATH_PATTERNS.some((re) => re.test(filePath));
+}
+
+/**
+ * Parse the unified diff text into per-file chunks.
+ * Returns an array of { path, header, body } objects where:
+ *   - path: the b/ path of the file
+ *   - header: the diff --git line + --- +++ lines (always kept)
+ *   - body: the hunk content (may be filtered/truncated)
+ */
+function splitDiffByFile(diffText: string): Array<{ path: string; header: string; body: string }> {
+  // Split on "diff --git" boundaries; keep the marker with each chunk
+  const chunks = diffText.split(/(?=^diff --git )/m).filter((c) => c.trim().length > 0);
+  return chunks.map((chunk) => {
+    // Extract the b/ path from the diff --git a/... b/... line
+    const gitLine = chunk.match(/^diff --git a\/.+ b\/(.+)/m);
+    const path = gitLine ? gitLine[1].trim() : "unknown";
+    // Header = everything up to (but not including) the first @@ line
+    const hhMatch = chunk.match(/^([\s\S]*?)(\n@@[\s\S]*)$/m);
+    if (hhMatch) {
+      return { path, header: hhMatch[1], body: hhMatch[2] };
+    }
+    // No hunk lines — pure rename/mode-change
+    return { path, header: chunk, body: "" };
+  });
+}
+
 /**
  * Build the review prompt embedding the raw diff so the model can identify
  * bugs, security issues, test gaps, guideline violations, and docs gaps.
- * Mirrors the agent prompts in .claude/commands/review-mr.md.
+ *
+ * Key invariants (fix for large-diff false positive):
+ * 1. ALL changed file PATHS are always listed up front, regardless of truncation.
+ * 2. Generated/vendored file diff bodies are FILTERED OUT before applying the
+ *    char budget so real source+tests receive the full budget.
+ * 3. If remaining content still exceeds the budget, truncation is applied
+ *    fairly per-file (not first-40k-wins) and noted in the prompt.
+ * 4. An explicit instruction tells the model NOT to report source/tests absent
+ *    for any file that appears in the file list — content omission must be
+ *    noted as "content omitted for length", not as "file not present".
  */
 function buildReviewPrompt(diffText: string, title: string, description: string): string {
   const MAX_DIFF_CHARS = 40_000;
-  const truncatedDiff = diffText.length > MAX_DIFF_CHARS
-    ? diffText.slice(0, MAX_DIFF_CHARS) + "\n... (diff truncated)"
-    : diffText;
+
+  const fileSections = splitDiffByFile(diffText);
+  const allPaths = fileSections.map((f) => f.path);
+
+  // Separate generated files (body filtered) from source files (body included)
+  const sourceSections = fileSections.filter((f) => !isGeneratedPath(f.path));
+  const generatedPaths = fileSections.filter((f) => isGeneratedPath(f.path)).map((f) => f.path);
+
+  // Build source diff content; apply fair per-file truncation if needed
+  const totalSourceChars = sourceSections.reduce((sum, f) => sum + f.header.length + f.body.length, 0);
+  let diffBlock: string;
+  const contentTrimmedPaths: string[] = [];
+
+  if (totalSourceChars <= MAX_DIFF_CHARS) {
+    // All source content fits — include verbatim
+    diffBlock = sourceSections.map((f) => f.header + f.body).join("\n");
+  } else {
+    // Fair per-file share of the budget
+    const perFileBudget = Math.floor(MAX_DIFF_CHARS / Math.max(sourceSections.length, 1));
+    diffBlock = sourceSections
+      .map((f) => {
+        const full = f.header + f.body;
+        if (full.length <= perFileBudget) return full;
+        contentTrimmedPaths.push(f.path);
+        return full.slice(0, perFileBudget) + "\n... (content trimmed for length)";
+      })
+      .join("\n");
+  }
+
+  // Build a note about generated files being excluded
+  const generatedNote = generatedPaths.length > 0
+    ? `Generated/vendored files excluded from diff content (names listed above):\n${generatedPaths.map((p) => `  - ${p}`).join("\n")}`
+    : "";
+
+  const trimNote = contentTrimmedPaths.length > 0
+    ? `Content trimmed for length in:\n${contentTrimmedPaths.map((p) => `  - ${p}`).join("\n")}`
+    : "";
 
   return [
     "You are a code reviewer. Review the following PR diff for issues.",
@@ -153,8 +262,21 @@ function buildReviewPrompt(diffText: string, title: string, description: string)
     `Description: ${description || "(none)"}`,
     "</mr_info>",
     "",
+    // ── IMPORTANT: full file list BEFORE diff content ──
+    "<changed_files>",
+    "The following files changed in this PR:",
+    ...allPaths.map((p) => `  - ${p}`),
+    "",
+    // Critical instruction: do NOT report absence based on truncation
+    "IMPORTANT: Do NOT report source/tests as absent for any file listed above.",
+    "If a file's content was omitted for length, say 'content omitted for length' instead.",
+    "Only report a test/source gap if you can see in the included content that it is missing.",
+    ...(generatedNote ? [generatedNote] : []),
+    ...(trimNote ? [trimNote] : []),
+    "</changed_files>",
+    "",
     "<diff>",
-    truncatedDiff,
+    diffBlock || "(no source diff content)",
     "</diff>",
     "",
     "Review for: security vulnerabilities, bugs/logic errors, missing tests, guideline violations, and documentation gaps.",
@@ -173,6 +295,13 @@ function buildReviewPrompt(diffText: string, title: string, description: string)
     "If NO issues found at all, output exactly: NO_FINDINGS",
   ].join("\n");
 }
+
+/**
+ * Exported alias for testing — allows tests to inspect the assembled prompt
+ * without going through the full provider fetch stack.
+ * Do NOT use in production paths.
+ */
+export { buildReviewPrompt as buildReviewPromptForTest };
 
 /**
  * Invoke `claude -p` as a subprocess (OAuth pattern — no ANTHROPIC_API_KEY).
@@ -235,6 +364,11 @@ const BLOCKING_SEVERITIES = new Set(["critical", "high", "medium"]);
 /**
  * Parse the structured FINDING: blocks emitted by the LLM into per-area counts
  * and a list of blocking issue descriptions for the report body.
+ *
+ * Confidence bands match the table Note in the report:
+ *   - 8-10 → Findings (high-confidence, counted in `security/bugs/tests/guidelines/docs`)
+ *   - 4-7  → Potential (medium-confidence, counted in `potentialSecurity/...`)
+ *   - 0-3  → Filtered (excluded entirely)
  */
 export function parseLlmFindings(llmOutput: string): LlmFindings {
   const result: LlmFindings = {
@@ -243,6 +377,11 @@ export function parseLlmFindings(llmOutput: string): LlmFindings {
     tests: 0,
     guidelines: 0,
     docs: 0,
+    potentialSecurity: 0,
+    potentialBugs: 0,
+    potentialTests: 0,
+    potentialGuidelines: 0,
+    potentialDocs: 0,
     blockingItems: [],
   };
 
@@ -276,16 +415,26 @@ export function parseLlmFindings(llmOutput: string): LlmFindings {
       else if (key === "fix") fix = val;
     }
 
-    // Filter low-confidence findings (mirrors the prompt instructions)
+    // Confidence < 4: filtered entirely (mirrors the prompt instructions)
     if (confidenceVal < 4) continue;
 
     // Map area to our known categories
     const areaKey = AREA_MAP[area];
     if (areaKey) {
-      result[areaKey] += 1;
+      if (confidenceVal >= 8) {
+        // High-confidence: counts as a Findings entry
+        result[areaKey] += 1;
+      } else {
+        // Medium-confidence (4-7): counts as a Potential entry
+        const potentialKey = `potential${areaKey.charAt(0).toUpperCase()}${areaKey.slice(1)}` as keyof Pick<
+          LlmFindings,
+          "potentialSecurity" | "potentialBugs" | "potentialTests" | "potentialGuidelines" | "potentialDocs"
+        >;
+        result[potentialKey] += 1;
+      }
     }
 
-    // Add to blocking section for CRITICAL/HIGH/MEDIUM findings
+    // Add to blocking section for CRITICAL/HIGH/MEDIUM findings (any confidence >= 4)
     if (BLOCKING_SEVERITIES.has(severity)) {
       const label = severity.toUpperCase();
       const areaLabel = area ? `[${area}] ` : "";
@@ -544,6 +693,8 @@ function renderRevLikeReport(args: {
   ci: { status: string; summary: string };
   findings: GateFinding[];
   llmFindings: LlmFindings;
+  /** Whether the LLM runner was invoked successfully (vs. fail-closed path). */
+  llmUsed: boolean;
   outcome: "PASS" | "FAIL";
   promptPath: string;
   postedBy: string;
@@ -562,13 +713,15 @@ function renderRevLikeReport(args: {
   const metadataFindings = args.findings.filter((finding) => finding.area === "Metadata").length;
   const llm = args.llmFindings;
   const totalBlockingCount = args.findings.length + llm.blockingItems.length;
+  // Reflect actual LLM use: "Yes" when claude -p succeeded, "No" on fail-closed path.
+  const aiAssistedLabel = args.llmUsed ? "Yes" : "No";
 
   const lines = [
     "## samorev Code Review Report",
     "",
     `- **${targetKind}:** ${targetRef} - ${args.title}`,
     `- **Author:** ${author}`,
-    "- **AI-Assisted:** Unknown",
+    `- **AI-Assisted:** ${aiAssistedLabel}`,
     "",
     "| Pipeline | Coverage |",
     "|----------|----------|",
@@ -611,11 +764,11 @@ function renderRevLikeReport(args: {
     "| Area | Findings | Potential | Filtered |",
     "|------|----------|-----------|----------|",
     `| CI/Pipeline | ${ciFindings} | 0 | 0 |`,
-    `| Security | ${llm.security} | 0 | 0 |`,
-    `| Bugs | ${llm.bugs} | 0 | 0 |`,
-    `| Tests | ${llm.tests} | 0 | 0 |`,
-    `| Guidelines | ${llm.guidelines} | 0 | 0 |`,
-    `| Docs | ${llm.docs} | 0 | 0 |`,
+    `| Security | ${llm.security} | ${llm.potentialSecurity} | 0 |`,
+    `| Bugs | ${llm.bugs} | ${llm.potentialBugs} | 0 |`,
+    `| Tests | ${llm.tests} | ${llm.potentialTests} | 0 |`,
+    `| Guidelines | ${llm.guidelines} | ${llm.potentialGuidelines} | 0 |`,
+    `| Docs | ${llm.docs} | ${llm.potentialDocs} | 0 |`,
     `| Metadata | ${metadataFindings} | 0 | 0 |`,
     "",
     "Note:",
