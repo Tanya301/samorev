@@ -358,7 +358,7 @@ export { runClaude as _runClaudeForTest };
 // LLM output parsing
 // ──────────────────────────────────────────────────────────────────────────────
 
-const AREA_MAP: Record<string, keyof Omit<LlmFindings, "blockingItems">> = {
+const AREA_MAP: Record<string, keyof Omit<LlmFindings, "blockingItems" | "allItems">> = {
   security: "security",
   bugs: "bugs",
   bug: "bugs",
