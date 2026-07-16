@@ -54,9 +54,28 @@ async function output(proc: ReturnType<typeof Bun.spawn>) {
   return { stdout, stderr, exitCode };
 }
 
+/**
+ * Write a stub `claude` binary into fakeBin so CLI tests don't hit the real
+ * claude -p. The stub returns NO_FINDINGS (clean review) so gate-only
+ * findings (CI/draft) remain the sole source of FAIL in tests that haven't
+ * opted into specific LLM scenarios.
+ */
+async function writeFakeClaude(findingsOutput = "NO_FINDINGS") {
+  await writeFile(
+    join(fakeBin, "claude"),
+    `#!/usr/bin/env bun
+// Fake claude -p for samorev CLI tests — returns pre-canned LLM output.
+process.stdout.write(${JSON.stringify(findingsOutput)});
+`,
+    { mode: 0o755 },
+  );
+}
+
 beforeEach(async () => {
   await rm(fakeBin, { recursive: true, force: true });
   await mkdir(fakeBin, { recursive: true });
+  // Always stub claude so tests don't call the real LLM.
+  await writeFakeClaude();
 });
 
 afterEach(async () => {
@@ -255,6 +274,8 @@ describe("bun samorev CLI", () => {
 
     const { report: summary } = await fetchReviewSummary(reference, plan, ".claude/commands/review-mr.md", {
       blocking: true,
+      // Stub the LLM runner so this unit test stays deterministic and fast.
+      claudeRunner: async () => "NO_FINDINGS",
       runCommand: async () => {
         throw new FetchError("glab unavailable");
       },
@@ -319,6 +340,8 @@ describe("bun samorev CLI", () => {
 
     const { report: summary } = await fetchReviewSummary(reference, plan, ".claude/commands/review-mr.md", {
       blocking: false,
+      // Stub the LLM runner so this unit test stays deterministic and fast.
+      claudeRunner: async () => "NO_FINDINGS",
       runCommand: async () => {
         throw new FetchError("glab unavailable");
       },
