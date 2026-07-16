@@ -47,7 +47,18 @@ type LlmFindings = {
   potentialTests: number;
   potentialGuidelines: number;
   potentialDocs: number;
-  /** Individual finding lines for the BLOCKING section */
+  /**
+   * All rendered finding lines for confidence >= 4 regardless of severity.
+   * This is the authoritative list used in the section body — its length
+   * equals the number in the section header and equals Findings+Potential
+   * in the Summary table (gate findings excluded, they are counted separately).
+   */
+  allItems: string[];
+  /**
+   * Subset of allItems that have CRITICAL/HIGH/MEDIUM severity.
+   * Kept for backward compatibility — used only when callers need the
+   * "truly blocking" subset; the section renders allItems, not blockingItems.
+   */
   blockingItems: string[];
 };
 
@@ -112,6 +123,7 @@ export async function fetchReviewSummary(
       potentialTests: 0,
       potentialGuidelines: 0,
       potentialDocs: 0,
+      allItems: ["**CRITICAL** [system] LLM reviewer unavailable — treating as FAIL (fail-closed)"],
       blockingItems: ["LLM reviewer unavailable — treating as FAIL (fail-closed)"],
     };
   }
@@ -346,7 +358,7 @@ export { runClaude as _runClaudeForTest };
 // LLM output parsing
 // ──────────────────────────────────────────────────────────────────────────────
 
-const AREA_MAP: Record<string, keyof Omit<LlmFindings, "blockingItems">> = {
+const AREA_MAP: Record<string, keyof Omit<LlmFindings, "blockingItems" | "allItems">> = {
   security: "security",
   bugs: "bugs",
   bug: "bugs",
@@ -382,6 +394,7 @@ export function parseLlmFindings(llmOutput: string): LlmFindings {
     potentialTests: 0,
     potentialGuidelines: 0,
     potentialDocs: 0,
+    allItems: [],
     blockingItems: [],
   };
 
@@ -434,11 +447,19 @@ export function parseLlmFindings(llmOutput: string): LlmFindings {
       }
     }
 
-    // Add to blocking section for CRITICAL/HIGH/MEDIUM findings (any confidence >= 4)
+    // Build the rendered line for this finding (used in both allItems and blockingItems)
+    const label = severity ? severity.toUpperCase() : "INFO";
+    const areaLabel = area ? `[${area}] ` : "";
+    const renderedLine = `**${label}** ${areaLabel}${issue}${evidence ? `\n> ${evidence}` : ""}${fix ? `\n> **Fix:** ${fix}` : ""}`;
+
+    // allItems collects ALL findings with confidence >= 4, regardless of severity.
+    // This is what gets rendered in the report section — its length is what the
+    // section header count declares, and it equals Findings+Potential in the table.
+    result.allItems.push(renderedLine);
+
+    // blockingItems is the CRITICAL/HIGH/MEDIUM subset (kept for backward compat)
     if (BLOCKING_SEVERITIES.has(severity)) {
-      const label = severity.toUpperCase();
-      const areaLabel = area ? `[${area}] ` : "";
-      result.blockingItems.push(`**${label}** ${areaLabel}${issue}${evidence ? `\n> ${evidence}` : ""}${fix ? `\n> **Fix:** ${fix}` : ""}`);
+      result.blockingItems.push(renderedLine);
     }
   }
 
@@ -712,9 +733,18 @@ function renderRevLikeReport(args: {
   const ciFindings = args.findings.filter((finding) => finding.area === "CI/Pipeline").length;
   const metadataFindings = args.findings.filter((finding) => finding.area === "Metadata").length;
   const llm = args.llmFindings;
-  const totalBlockingCount = args.findings.length + llm.blockingItems.length;
+  // totalDisplayedCount: gate findings + ALL LLM items with confidence >= 4 (allItems).
+  // This is the authoritative count shown in the section header and must equal
+  // the number of issue blocks actually rendered — it also equals the sum of
+  // Findings + Potential across all rows in the Summary table.
+  const totalDisplayedCount = args.findings.length + llm.allItems.length;
   // Reflect actual LLM use: "Yes" when claude -p succeeded, "No" on fail-closed path.
   const aiAssistedLabel = args.llmUsed ? "Yes" : "No";
+
+  // Section header label: "BLOCKING ISSUES" only when the review is truly blocking
+  // (i.e. blocking=true). Non-blocking reviews use "REVIEW FINDINGS" to avoid
+  // misleading readers who also see blocking=false in the metadata block.
+  const issuesSectionLabel = args.blocking ? "BLOCKING ISSUES" : "REVIEW FINDINGS";
 
   const lines = [
     "## samorev Code Review Report",
@@ -731,9 +761,9 @@ function renderRevLikeReport(args: {
     "",
   ];
 
-  if (totalBlockingCount > 0) {
-    lines.push(`### BLOCKING ISSUES (${totalBlockingCount})`, "");
-    // Gate findings (CI/draft)
+  if (totalDisplayedCount > 0) {
+    lines.push(`### ${issuesSectionLabel} (${totalDisplayedCount})`, "");
+    // Gate findings (CI/draft) — rendered first
     for (const finding of args.findings) {
       lines.push(
         `**${finding.severity}** \`${finding.subject}\` - ${finding.title}`,
@@ -742,8 +772,11 @@ function renderRevLikeReport(args: {
         "",
       );
     }
-    // LLM blocking findings
-    for (const item of llm.blockingItems) {
+    // LLM findings — ALL items with confidence >= 4 (allItems), not just blocking-severity.
+    // Using allItems ensures the rendered count matches the section header count and the
+    // Summary table totals. blockingItems (CRITICAL/HIGH/MEDIUM only) was the source of
+    // the discrepancy: LOW-severity items were counted in the table but never rendered.
+    for (const item of llm.allItems) {
       lines.push(item, "");
     }
     lines.push("---", "");
