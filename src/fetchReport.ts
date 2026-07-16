@@ -180,13 +180,16 @@ function buildReviewPrompt(diffText: string, title: string, description: string)
  * binary by prepending a directory to PATH before spawning.
  * Throws on non-zero exit so the caller can apply fail-closed logic.
  *
- * Security: `--tools ""` disables ALL tool access so that prompt-injection
- * embedded in an attacker-controlled diff cannot execute commands.
+ * Security: `--allowedTools ""` sets an EMPTY tool allow-list so prompt-injection
+ * embedded in an attacker-controlled diff cannot execute any tool/command.
+ * The prompt is passed via STDIN (not argv): `--allowedTools` is variadic and
+ * would otherwise swallow a trailing positional prompt on claude >= 2.1.
  * The model can still read the prompt and emit text output.
  */
 async function runClaude(prompt: string): Promise<string> {
   const proc = Bun.spawn({
-    cmd: ["claude", "-p", "--tools", "", prompt],
+    cmd: ["claude", "-p", "--allowedTools", ""],
+    stdin: new TextEncoder().encode(prompt),
     stdout: "pipe",
     stderr: "pipe",
     env: {
@@ -694,3 +697,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function displayCommand(command: string[]): string {
   return command.join(" ");
 }
+
