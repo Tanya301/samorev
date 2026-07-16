@@ -179,10 +179,14 @@ function buildReviewPrompt(diffText: string, title: string, description: string)
  * Inherits the current process PATH so that tests can inject a fake `claude`
  * binary by prepending a directory to PATH before spawning.
  * Throws on non-zero exit so the caller can apply fail-closed logic.
+ *
+ * Security: `--tools ""` disables ALL tool access so that prompt-injection
+ * embedded in an attacker-controlled diff cannot execute commands.
+ * The model can still read the prompt and emit text output.
  */
 async function runClaude(prompt: string): Promise<string> {
   const proc = Bun.spawn({
-    cmd: ["claude", "-p", "--dangerously-skip-permissions", prompt],
+    cmd: ["claude", "-p", "--tools", "", prompt],
     stdout: "pipe",
     stderr: "pipe",
     env: {
