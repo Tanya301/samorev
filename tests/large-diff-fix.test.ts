@@ -208,8 +208,8 @@ describe("AI-Assisted label accuracy", () => {
     );
 
     expect(report).not.toContain("AI-Assisted: Unknown");
-    // Must show that AI review was performed
-    expect(report).toMatch(/AI-Assisted:\s*(Yes|claude|✓|used)/i);
+    // Must show that AI review was performed (handles bold markdown: **AI-Assisted:** Yes)
+    expect(report).toMatch(/AI-Assisted:\*{0,2}\s*(Yes|claude|used)/i);
   });
 
   it('report says "AI-Assisted: No" when claudeRunner threw (fail-closed path)', async () => {
@@ -229,7 +229,7 @@ describe("AI-Assisted label accuracy", () => {
 
     // Fail-closed path: LLM was NOT used successfully
     expect(report).not.toContain("AI-Assisted: Unknown");
-    expect(report).toMatch(/AI-Assisted:\s*No/i);
+    expect(report).toMatch(/AI-Assisted:\*{0,2}\s*No/i);
   });
 });
 
