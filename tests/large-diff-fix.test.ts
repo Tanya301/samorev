@@ -319,10 +319,10 @@ describe("category count consistency", () => {
     expect(findingsRow![2]).toBe("1"); // Potential (4-7)
   });
 
-  it("total count in BLOCKING ISSUES header matches number of blocking item paragraphs", async () => {
+  it("total count in issues section header matches number of item paragraphs rendered", async () => {
     const { diff } = makeLargeDiff();
 
-    // 2 HIGH findings → 2 blocking items → header should say BLOCKING ISSUES (2)
+    // 2 HIGH findings → 2 items in allItems → header count should equal rendered paragraphs
     const llmOutput = [
       "FINDING:",
       "- severity: HIGH",
@@ -346,6 +346,7 @@ describe("category count consistency", () => {
       githubPlan,
       ".claude/commands/review-mr.md",
       {
+        // Use blocking: false so we exercise the REVIEW FINDINGS label path
         blocking: false,
         runCommand: makeRunCommand(diff),
         noComment: true,
@@ -353,14 +354,15 @@ describe("category count consistency", () => {
       },
     );
 
-    // Header shows count
-    const headerMatch = report.match(/### BLOCKING ISSUES \((\d+)\)/);
+    // Header must use REVIEW FINDINGS (not BLOCKING ISSUES) when blocking=false
+    expect(report).not.toContain("### BLOCKING ISSUES");
+    const headerMatch = report.match(/### REVIEW FINDINGS \((\d+)\)/);
     expect(headerMatch).not.toBeNull();
     const declaredCount = parseInt(headerMatch![1], 10);
 
-    // Count actual FINDING blocks in the rendered BLOCKING section
-    const blockingSection = report.match(/### BLOCKING ISSUES[\s\S]*?---/)?.[0] ?? "";
-    const renderedItems = (blockingSection.match(/\*\*(CRITICAL|HIGH|MEDIUM)\*\*/g) ?? []).length;
+    // Count actual severity badges in the rendered issues section (before first ---)
+    const issuesSection = report.match(/### REVIEW FINDINGS[\s\S]*?---/)?.[0] ?? "";
+    const renderedItems = (issuesSection.match(/\*\*(CRITICAL|HIGH|MEDIUM|LOW|INFO)\*\*/g) ?? []).length;
 
     expect(declaredCount).toBe(renderedItems);
   });

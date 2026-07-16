@@ -99,7 +99,8 @@ describe("bun samorev CLI", () => {
     expect(result.stderr).not.toContain("Error:");
     expect(result.stdout).toContain("## samorev Code Review Report");
     expect(result.stdout).toContain("- **PR:** example-org/example-repo#17 - Demo PR");
-    expect(result.stdout).toContain("### BLOCKING ISSUES (1)");
+    // Non-blocking run (no --blocking flag): section must say REVIEW FINDINGS, not BLOCKING ISSUES
+    expect(result.stdout).toContain("### REVIEW FINDINGS (1)");
     expect(result.stdout).toContain("Pipeline status is failure");
     expectRevReportShape(result.stdout);
     expect(expectVisibleReport(result.stdout)).not.toContain("provider=github");
@@ -149,7 +150,8 @@ describe("bun samorev CLI", () => {
     expect(stdoutMetadata).toContain("live_posting=posted");
     expect(postedBody).toContain("## samorev Code Review Report");
     expect(postedBody).toContain("- **PR:** example-org/example-repo#17 - Demo PR");
-    expect(postedBody).toContain("### BLOCKING ISSUES (1)");
+    // Non-blocking run: section must say REVIEW FINDINGS, not BLOCKING ISSUES
+    expect(postedBody).toContain("### REVIEW FINDINGS (1)");
     expect(postedBody).toContain("Pipeline status is failure");
     expectRevReportShape(postedBody);
     expect(expectVisibleReport(postedBody)).not.toContain("provider=github");
@@ -199,7 +201,8 @@ describe("bun samorev CLI", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("## samorev Code Review Report");
-    expect(result.stdout).toContain("### BLOCKING ISSUES (1)");
+    // Non-blocking run: section must say REVIEW FINDINGS, not BLOCKING ISSUES
+    expect(result.stdout).toContain("### REVIEW FINDINGS (1)");
     const metadata = expectMetadataDetails(result.stdout);
     expect(metadata).toContain("posted_by=local");
     expect(metadata).toContain("no_comment=true");
@@ -233,7 +236,8 @@ describe("bun samorev CLI", () => {
     expect(stdoutMetadata).toContain("live_posting=posted");
     expect(postedBody).toContain("## samorev Code Review Report");
     expect(postedBody).toContain("- **MR:** example-group/example-project!42 - GitLab demo");
-    expect(postedBody).toContain("### BLOCKING ISSUES (1)");
+    // Non-blocking run: section must say REVIEW FINDINGS, not BLOCKING ISSUES
+    expect(postedBody).toContain("### REVIEW FINDINGS (1)");
     expect(postedBody).toContain("Pipeline status is failed");
     expectRevReportShape(postedBody);
     expect(expectVisibleReport(postedBody)).not.toContain("provider=gitlab");
@@ -390,7 +394,8 @@ describe("bun samorev CLI", () => {
       ]),
     );
     expect(noBlockResult.exitCode).toBe(0);
-    expect(noBlockResult.stdout).toContain("### BLOCKING ISSUES (1)");
+    // Without --blocking: section says REVIEW FINDINGS (non-blocking label)
+    expect(noBlockResult.stdout).toContain("### REVIEW FINDINGS (1)");
 
     // With --blocking: must exit non-zero when verdict is FAIL
     const blockResult = await output(
@@ -403,6 +408,7 @@ describe("bun samorev CLI", () => {
       ]),
     );
     expect(blockResult.exitCode).not.toBe(0);
+    // With --blocking: section says BLOCKING ISSUES (blocking label)
     expect(blockResult.stdout).toContain("### BLOCKING ISSUES (1)");
     expect(blockResult.stdout).toContain("Pipeline status is failure");
   });
