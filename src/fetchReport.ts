@@ -19,11 +19,29 @@ type FetchedData = {
 type RunCommand = (command: string[]) => Promise<string>;
 type HttpJson = (url: string) => Promise<unknown>;
 
+/**
+ * Injectable claude -p runner boundary.
+ * Receives the assembled review prompt; returns the model's stdout text.
+ * Mock this in tests — never pass ANTHROPIC_API_KEY or @anthropic-ai/sdk.
+ */
+export type ClaudeRunner = (prompt: string) => Promise<string>;
+
 export type ReviewOutcome = "PASS" | "FAIL";
 
 export type FetchReviewResult = {
   report: string;
   outcome: ReviewOutcome;
+};
+
+/** Per-area finding counts parsed from LLM output. */
+type LlmFindings = {
+  security: number;
+  bugs: number;
+  tests: number;
+  guidelines: number;
+  docs: number;
+  /** Individual finding lines for the BLOCKING section */
+  blockingItems: string[];
 };
 
 export async function fetchReviewSummary(
@@ -37,10 +55,16 @@ export async function fetchReviewSummary(
     noComment?: boolean;
     postedBy?: string;
     livePosting?: "not-run" | "posted" | "blocked";
+    /**
+     * Inject a claude -p runner in tests.
+     * Production code uses the real claude subprocess via runClaude().
+     */
+    claudeRunner?: ClaudeRunner;
   } = { blocking: false },
 ): Promise<FetchReviewResult> {
   const runCommand = options.runCommand ?? runText;
   const httpJson = options.httpJson ?? fetchJson;
+  const claudeRunner = options.claudeRunner ?? runClaude;
   const fetched = reference.provider === "github"
     ? await fetchGitHub(plan, runCommand)
     : await fetchGitLab(reference, plan, runCommand, httpJson);
@@ -54,12 +78,35 @@ export async function fetchReviewSummary(
   const title = String(fetched.metadata.title ?? fetched.metadata.source_branch ?? "(untitled)");
   const state = String(fetched.metadata.state ?? fetched.metadata.merge_status ?? "unknown");
   const draft = metadataDraft(reference.provider, fetched.metadata);
-  const findings = reviewGateFindings(ci.status, draft);
-  const outcome: ReviewOutcome = findings.length ? "FAIL" : "PASS";
+  const gateFindings = reviewGateFindings(ci.status, draft);
   const counts = {
     comments: countJsonItems(fetched.comments),
     commits: countJsonItems(fetched.commits),
   };
+
+  // Invoke claude -p with the actual diff; fail-closed on any error.
+  let llmFindings: LlmFindings;
+  try {
+    const prompt = buildReviewPrompt(fetched.diff, title, String(fetched.metadata.description ?? fetched.metadata.body ?? ""));
+    const llmOutput = await claudeRunner(prompt);
+    llmFindings = parseLlmFindings(llmOutput);
+  } catch (_err) {
+    // Fail-closed: if the LLM runner fails we must not auto-PASS.
+    llmFindings = {
+      security: 0,
+      bugs: 0,
+      tests: 0,
+      guidelines: 0,
+      docs: 0,
+      blockingItems: ["LLM reviewer unavailable — treating as FAIL (fail-closed)"],
+    };
+  }
+
+  // Outcome is FAIL when:
+  // - CI/draft gate has findings (gateFindings), OR
+  // - LLM surfaced CRITICAL/HIGH/MEDIUM findings (blockingItems).
+  // LOW/INFO findings are counted in the summary table but do NOT trigger FAIL.
+  const outcome: ReviewOutcome = (gateFindings.length > 0 || llmFindings.blockingItems.length > 0) ? "FAIL" : "PASS";
 
   const report = renderRevLikeReport({
     reference,
@@ -68,7 +115,8 @@ export async function fetchReviewSummary(
     draft,
     diff,
     ci,
-    findings,
+    findings: gateFindings,
+    llmFindings,
     outcome,
     promptPath,
     postedBy: options.postedBy ?? "local",
@@ -80,6 +128,169 @@ export async function fetchReviewSummary(
   });
 
   return { report, outcome };
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// LLM invocation — claude -p subprocess (OAuth only, no ANTHROPIC_API_KEY)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build the review prompt embedding the raw diff so the model can identify
+ * bugs, security issues, test gaps, guideline violations, and docs gaps.
+ * Mirrors the agent prompts in .claude/commands/review-mr.md.
+ */
+function buildReviewPrompt(diffText: string, title: string, description: string): string {
+  const MAX_DIFF_CHARS = 40_000;
+  const truncatedDiff = diffText.length > MAX_DIFF_CHARS
+    ? diffText.slice(0, MAX_DIFF_CHARS) + "\n... (diff truncated)"
+    : diffText;
+
+  return [
+    "You are a code reviewer. Review the following PR diff for issues.",
+    "",
+    "<mr_info>",
+    `Title: ${title}`,
+    `Description: ${description || "(none)"}`,
+    "</mr_info>",
+    "",
+    "<diff>",
+    truncatedDiff,
+    "</diff>",
+    "",
+    "Review for: security vulnerabilities, bugs/logic errors, missing tests, guideline violations, and documentation gaps.",
+    "",
+    "For EACH issue found, output a block in this EXACT format (preserve the FINDING: header):",
+    "FINDING:",
+    "- severity: CRITICAL | HIGH | MEDIUM | LOW",
+    "- confidence: <0-10>",
+    "- area: Security | Bugs | Tests | Guidelines | Docs",
+    "- issue: <brief description>",
+    "- evidence: <the problematic code>",
+    "- fix: <remediation>",
+    "",
+    "Only report findings with confidence >= 4.",
+    "If no issues found in a category, skip it.",
+    "If NO issues found at all, output exactly: NO_FINDINGS",
+  ].join("\n");
+}
+
+/**
+ * Invoke `claude -p` as a subprocess (OAuth pattern — no ANTHROPIC_API_KEY).
+ * Inherits the current process PATH so that tests can inject a fake `claude`
+ * binary by prepending a directory to PATH before spawning.
+ * Throws on non-zero exit so the caller can apply fail-closed logic.
+ *
+ * Security: `--tools ""` disables ALL tool access so that prompt-injection
+ * embedded in an attacker-controlled diff cannot execute commands.
+ * The model can still read the prompt and emit text output.
+ */
+async function runClaude(prompt: string): Promise<string> {
+  const proc = Bun.spawn({
+    cmd: ["claude", "-p", "--tools", "", prompt],
+    stdout: "pipe",
+    stderr: "pipe",
+    env: {
+      HOME: process.env.HOME ?? "/root",
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      USER: process.env.USER ?? "root",
+    },
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (exitCode !== 0) {
+    const detail = stderr.trim() ? `: ${stderr.trim()}` : "";
+    throw new FetchError(`claude -p exited with code ${exitCode}${detail}`);
+  }
+  return stdout;
+}
+
+// Exported only for testing
+export { runClaude as _runClaudeForTest };
+
+// ──────────────────────────────────────────────────────────────────────────────
+// LLM output parsing
+// ──────────────────────────────────────────────────────────────────────────────
+
+const AREA_MAP: Record<string, keyof Omit<LlmFindings, "blockingItems">> = {
+  security: "security",
+  bugs: "bugs",
+  bug: "bugs",
+  tests: "tests",
+  test: "tests",
+  guidelines: "guidelines",
+  guideline: "guidelines",
+  docs: "docs",
+  doc: "docs",
+  documentation: "docs",
+};
+
+const BLOCKING_SEVERITIES = new Set(["critical", "high", "medium"]);
+
+/**
+ * Parse the structured FINDING: blocks emitted by the LLM into per-area counts
+ * and a list of blocking issue descriptions for the report body.
+ */
+export function parseLlmFindings(llmOutput: string): LlmFindings {
+  const result: LlmFindings = {
+    security: 0,
+    bugs: 0,
+    tests: 0,
+    guidelines: 0,
+    docs: 0,
+    blockingItems: [],
+  };
+
+  if (!llmOutput || llmOutput.trim().toUpperCase().startsWith("NO_FINDINGS")) {
+    return result;
+  }
+
+  // Split on FINDING: markers
+  const blocks = llmOutput.split(/\bFINDING:\s*/i).slice(1);
+
+  for (const block of blocks) {
+    const lines = block.split(/\r?\n/);
+    let severity = "";
+    let confidenceVal = 10;
+    let area = "";
+    let issue = "";
+    let evidence = "";
+    let fix = "";
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      const kv = /^-\s*(\w+):\s*(.*)$/.exec(trimmed);
+      if (!kv) continue;
+      const key = kv[1].toLowerCase();
+      const val = kv[2].trim();
+      if (key === "severity") severity = val.toLowerCase();
+      else if (key === "confidence") confidenceVal = parseInt(val, 10) || 0;
+      else if (key === "area") area = val.toLowerCase();
+      else if (key === "issue") issue = val;
+      else if (key === "evidence") evidence = val;
+      else if (key === "fix") fix = val;
+    }
+
+    // Filter low-confidence findings (mirrors the prompt instructions)
+    if (confidenceVal < 4) continue;
+
+    // Map area to our known categories
+    const areaKey = AREA_MAP[area];
+    if (areaKey) {
+      result[areaKey] += 1;
+    }
+
+    // Add to blocking section for CRITICAL/HIGH/MEDIUM findings
+    if (BLOCKING_SEVERITIES.has(severity)) {
+      const label = severity.toUpperCase();
+      const areaLabel = area ? `[${area}] ` : "";
+      result.blockingItems.push(`**${label}** ${areaLabel}${issue}${evidence ? `\n> ${evidence}` : ""}${fix ? `\n> **Fix:** ${fix}` : ""}`);
+    }
+  }
+
+  return result;
 }
 
 async function fetchGitHub(plan: FetchPlan, runCommand: RunCommand): Promise<FetchedData> {
@@ -329,6 +540,7 @@ function renderRevLikeReport(args: {
   diff: { lines: number; added: number; removed: number; bytes: number };
   ci: { status: string; summary: string };
   findings: GateFinding[];
+  llmFindings: LlmFindings;
   outcome: "PASS" | "FAIL";
   promptPath: string;
   postedBy: string;
@@ -343,9 +555,10 @@ function renderRevLikeReport(args: {
     ? `${args.reference.projectPath}!${args.reference.number}`
     : `${args.reference.projectPath}#${args.reference.number}`;
   const author = metadataAuthor(args.metadata);
-  const blockingCount = args.findings.length;
   const ciFindings = args.findings.filter((finding) => finding.area === "CI/Pipeline").length;
   const metadataFindings = args.findings.filter((finding) => finding.area === "Metadata").length;
+  const llm = args.llmFindings;
+  const totalBlockingCount = args.findings.length + llm.blockingItems.length;
 
   const lines = [
     "## samorev Code Review Report",
@@ -362,8 +575,9 @@ function renderRevLikeReport(args: {
     "",
   ];
 
-  if (blockingCount > 0) {
-    lines.push(`### BLOCKING ISSUES (${blockingCount})`, "");
+  if (totalBlockingCount > 0) {
+    lines.push(`### BLOCKING ISSUES (${totalBlockingCount})`, "");
+    // Gate findings (CI/draft)
     for (const finding of args.findings) {
       lines.push(
         `**${finding.severity}** \`${finding.subject}\` - ${finding.title}`,
@@ -371,6 +585,10 @@ function renderRevLikeReport(args: {
         `> **Fix:** ${finding.fix}`,
         "",
       );
+    }
+    // LLM blocking findings
+    for (const item of llm.blockingItems) {
+      lines.push(item, "");
     }
     lines.push("---", "");
   } else {
@@ -390,11 +608,11 @@ function renderRevLikeReport(args: {
     "| Area | Findings | Potential | Filtered |",
     "|------|----------|-----------|----------|",
     `| CI/Pipeline | ${ciFindings} | 0 | 0 |`,
-    "| Security | 0 | 0 | 0 |",
-    "| Bugs | 0 | 0 | 0 |",
-    "| Tests | 0 | 0 | 0 |",
-    "| Guidelines | 0 | 0 | 0 |",
-    "| Docs | 0 | 0 | 0 |",
+    `| Security | ${llm.security} | 0 | 0 |`,
+    `| Bugs | ${llm.bugs} | 0 | 0 |`,
+    `| Tests | ${llm.tests} | 0 | 0 |`,
+    `| Guidelines | ${llm.guidelines} | 0 | 0 |`,
+    `| Docs | ${llm.docs} | 0 | 0 |`,
     `| Metadata | ${metadataFindings} | 0 | 0 |`,
     "",
     "Note:",
