@@ -19,9 +19,12 @@ The same report is what gets posted to the PR/MR (unless `--no-comment`).
 
 | Pipeline | Coverage |
 |----------|----------|
-| <PASS|PENDING|FAIL|<raw status>> | Not reported |
+| <PASS|PENDING|FAIL> | Not reported |
 
 ---
+
+Statuses outside the documented success and transient sets render the `FAIL`
+badge; raw provider statuses are preserved only in findings and metadata.
 
 <EITHER the BLOCKING block OR the PASS block — see below>
 
@@ -55,9 +58,8 @@ Note:
 *samorev-assisted review (AI analysis by [Tanya301/samorev](https://github.com/Tanya301/samorev))*
 ```
 
-> The `Security/Bugs/Tests/Guidelines/Docs` rows are always `0` from the CLI;
-> only `CI/Pipeline` and `Metadata` can be non-zero. (The AI agents that fill the
-> other rows run only via the `/review-mr` slash command.)
+> The `Security/Bugs/Tests/Guidelines/Docs` rows reflect the bounded Claude
+> review. Model transport or parsing failure fails closed.
 
 ---
 
@@ -90,8 +92,16 @@ Gate findings (from `reviewGateFindings()`):
 | Trigger | Area | Severity |
 |---------|------|----------|
 | `draft == true` | Metadata | HIGH |
-| CI status not in {`success`, `none`} and `== pending` | CI/Pipeline | HIGH |
-| CI status not in {`success`, `none`} and any other | CI/Pipeline | CRITICAL |
+| CI status `pending`, `running`, `created`, `preparing`, `scheduled`, `waiting_for_resource`, or `none` | CI/Pipeline | HIGH |
+| CI status `self-only` | CI/Pipeline | HIGH |
+| Any other CI status | CI/Pipeline | CRITICAL |
+
+For GitHub check conclusions, `success`, `skipped`, and `neutral` are
+non-blocking; `failure`, `cancelled`, `timed_out`, `action_required`, `stale`,
+and `startup_failure` are failures. Unknown future conclusions also fail closed.
+At least one check must conclude `success`; an all-skipped
+or all-neutral set normalizes to `none`. The normalized failure status is
+`failure` (not `failed`). GitLab MRs with no pipeline also normalize to `none`.
 
 ---
 
@@ -111,8 +121,8 @@ one per line:
 | `draft` | `true` / `false` |
 | `diff_lines` / `diff_added` / `diff_removed` / `diff_bytes` | diff size |
 | `comments_count` / `commits_count` | counts |
-| `ci_status` | normalized CI status used by the gate |
-| `ci_summary` | per-bucket CI detail |
+| `ci_status` | normalized CI status used by the gate; `self-only` means configured non-failing GitHub publisher checks were excluded and no independent CI remained, so the gate fails closed |
+| `ci_summary` | per-bucket evaluated-CI detail; `success` includes non-blocking success/skipped/neutral conclusions, while `ci_status` remains authoritative and requires at least one genuine success; may end with `excluded_self=N`, and then `total` excludes that explicitly trusted non-failing publisher check run |
 | `prompt` | path to the review prompt |
 | `blocking` | echoes the `--blocking` flag |
 | `posted_by` | `local`, `gh`, or `glab` |
@@ -141,8 +151,11 @@ echo "verdict=$verdict ci_status=$ci_status live_posting=$live_posting"
 
 Robustness notes:
 
-- A clean `--fetch` exits `0` for **both** PASS and FAIL. Use the body, not `$?`,
-  for the verdict. `$? != 0` means the fetch/post itself failed.
-- `live_posting=blocked` (with a non-zero exit) means posting was requested but
-  provider auth failed — re-auth `gh`/`glab` and retry.
+- With `--blocking`, PASS exits `0` and a completed FAIL verdict exits `1`.
+  Exit `1` can also mean fetch/auth/posting failure; use the body and metadata
+  to distinguish a `### BLOCKING ISSUES` report from an incomplete run.
+- `live_posting=blocked` (with a non-zero exit) means the requested comment was
+  not posted. Check stderr: `Provider posting blocked` indicates auth failure;
+  `Provider posting failed` indicates a post-time permission, rate-limit,
+  provider, or network failure.
 - Treat `UNKNOWN` as a hard failure (fail closed) rather than assuming PASS.

@@ -38,7 +38,7 @@ def test_github_pr_url_detection_and_fetch_plan():
         api_resource="repos/example-org/example-repo/pulls/17",
         comments_command=("gh", "api", "repos/example-org/example-repo/issues/17/comments", "--paginate"),
         commits_command=("gh", "api", "repos/example-org/example-repo/pulls/17/commits", "--paginate"),
-        ci_command=("gh", "api", "repos/example-org/example-repo/commits/pull/17/head/check-runs", "--paginate"),
+        ci_command=("gh", "api", "repos/example-org/example-repo/commits/pull/17/head/check-runs", "--paginate", "--slurp"),
         failed_jobs_command=("gh", "run", "view", "$RUN_ID", "--repo", "example-org/example-repo", "--json", "jobs"),
         failed_job_log_command=("gh", "run", "view", "$RUN_ID", "--repo", "example-org/example-repo", "--job", "$JOB_ID", "--log-failed"),
         post_comment_command=("gh", "pr", "comment", "17", "--repo", "example-org/example-repo", "--body-file", "-"),
@@ -109,6 +109,7 @@ def test_github_fetch_plan_is_end_to_end_and_not_gitlab_mandatory():
     assert "repos/example-org/example-repo/issues/17/comments" in " ".join(plan.comments_command)
     assert "repos/example-org/example-repo/pulls/17/commits" in " ".join(plan.commits_command)
     assert "repos/example-org/example-repo/commits/pull/17/head/check-runs" in " ".join(plan.ci_command)
+    assert "--slurp" in plan.ci_command
     assert "gh run view" in " ".join(plan.failed_jobs_command)
     assert "--log-failed" in plan.failed_job_log_command
     assert "gh pr comment" in " ".join(plan.post_comment_command)
@@ -126,6 +127,23 @@ def test_review_command_has_provider_specific_mandatory_sections():
     assert "$FAILED_JOB_LOG_COMMAND" in command_text
     assert "$POST_COMMENT_COMMAND" in command_text
     assert "gh pr comment" in command_text
+
+
+def test_review_command_fails_closed_and_preserves_self_check_context():
+    command_text = (Path(__file__).parent.parent / ".claude/commands/review-mr.md").read_text()
+
+    assert 'bash "$SAMOREV_ROOT/scripts/summarize-github-ci.sh"' in command_text
+    assert "CI_SUMMARY_FALLBACK=" in command_text
+    assert "GitHub CI summarizer unavailable at $SAMOREV_ROOT/scripts/summarize-github-ci.sh; failing closed" in command_text
+    assert "PIPELINE_STATUS=$(jq -r '.status'" in command_text
+    assert "EXCLUDED_SELF=$(jq -r '.excluded_self'" in command_text
+    assert "Excluded {EXCLUDED_SELF} explicitly trusted" in command_text
+    assert "| `failure` | **BLOCKING** - GitHub CI failed" in command_text
+    assert "Pipeline status is self-only" in command_text
+    assert "Run at least one independent CI check successfully" in command_text
+    assert 'PIPELINE_STATUS="fetch-error"' in command_text
+    assert '.head_pipeline.status // .pipeline.status // "none"' in command_text
+    assert "| any other status | **BLOCKING**" in command_text
 
 
 def test_shell_exports_include_end_to_end_provider_operations():

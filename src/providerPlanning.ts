@@ -92,7 +92,7 @@ export function planFetch(reference: ReviewReference): FetchPlan {
       apiResource: `repos/${project}/pulls/${number}`,
       commentsCommand: ["gh", "api", `repos/${project}/issues/${number}/comments`, "--paginate"],
       commitsCommand: ["gh", "api", `repos/${project}/pulls/${number}/commits`, "--paginate"],
-      ciCommand: ["gh", "api", `repos/${project}/commits/pull/${number}/head/check-runs`, "--paginate"],
+      ciCommand: ["gh", "api", `repos/${project}/commits/pull/${number}/head/check-runs`, "--paginate", "--slurp"],
       failedJobsCommand: ["gh", "run", "view", "$RUN_ID", "--repo", project, "--json", "jobs"],
       failedJobLogCommand: ["gh", "run", "view", "$RUN_ID", "--repo", project, "--job", "$JOB_ID", "--log-failed"],
       postCommentCommand: ["gh", "pr", "comment", number, "--repo", project, "--body-file", "-"],

@@ -107,6 +107,9 @@ stores** — it does not read provider tokens from environment variables itself.
 | GitLab auth | `glab auth login` (or a `glab`-configured token) | Authenticated GitLab MR fetch; posting comments |
 | GitLab token scopes | `api` (read MR + post notes) — or `read_api` if the bot only fetches with `--no-comment` | GitLab reviews |
 | GitLab public MRs | nothing — public REST API fallback runs when `glab` is missing or its token is bad | Read-only public GitLab MR fetch |
+| `SAMOREV_IGNORED_GITHUB_CHECK_RUN_IDS` | Fresh comma-separated Checks API IDs | Trusted GitHub verdict publishers only; CLI and `/review-mr` |
+| `SAMOREV_IGNORED_GITHUB_CHECK_NAME` | Exact publisher check name | Trusted GitHub verdict publishers only; CLI and `/review-mr` |
+| `SAMOREV_IGNORED_GITHUB_CHECK_APP_ID` | Numeric publisher app ID | Trusted GitHub verdict publishers only; CLI and `/review-mr` |
 
 **Verify auth before a posting run** (the CLI runs `gh auth status` / `glab auth
 status` internally before posting and exits non-zero with `live_posting=blocked`
@@ -125,7 +128,18 @@ Only relevant if the bot drives `/review-mr` inside Claude Code:
 |---------|---------|---------|
 | `GITLAB_TOKEN` | `lib/review_memory.py` | Fetch prior-review context for GitLab MRs (sent as `PRIVATE-TOKEN`). |
 | `GITLAB_HOST` | `lib/review_memory.py` | Override GitLab host (default `gitlab.com`). |
-| `REPO_ROOT` / `REV_ROOT` | `.claude/commands/review-mr.md` | Path hints to locate `lib/` helpers. |
+| `REPO_ROOT` | `.claude/commands/review-mr.md` | Repository-under-review root for project data and optional rules; never an executable-helper source. |
+| `REV_ROOT` | `.claude/commands/review-mr.md` | Explicit trusted samorev checkout containing executable helpers. |
+| `SAMOREV_ROOT` | `.claude/commands/review-mr.md` | Derived in Step 1 from the resolved trusted planning helper; points at the complete checkout used for `lib/` and `scripts/`. |
+| `SAMOREV_INSTALL_ROOT` | `scripts/install-claude-command.sh` | Override the trusted checkout link (default `$HOME/.claude/samorev`). |
+| `SAMOREV_IGNORED_GITHUB_CHECK_RUN_IDS` | `scripts/summarize-github-ci.sh` | Trusted current publisher check IDs; shared with Surface A. |
+| `SAMOREV_IGNORED_GITHUB_CHECK_NAME` | `scripts/summarize-github-ci.sh` | Exact trusted publisher name; shared with Surface A. |
+| `SAMOREV_IGNORED_GITHUB_CHECK_APP_ID` | `scripts/summarize-github-ci.sh` | Numeric trusted publisher app ID; shared with Surface A. |
+
+The `/review-mr` installation is a repository installation, not a standalone
+command-file copy. Keep `scripts/summarize-github-ci.sh` beside
+`lib/provider_planning.py` when installing or upgrading; missing either helper
+makes GitHub reviews fail closed.
 
 ### NOT needed to operate samorev
 
@@ -163,7 +177,7 @@ remote URL`). GitHub remotes resolve to PRs; GitLab remotes resolve to MRs.
 |------|--------|
 | `--fetch` | Execute provider fetches, render the PASS/FAIL gate report. Posts it unless `--no-comment`. |
 | `--no-comment` | Print report to stdout only; never post to the provider. |
-| `--blocking` | Recorded in output as `blocking=true`. **Does not change the CLI exit code** (the CLI does not exit non-zero on gate FAIL today; see gotchas). |
+| `--blocking` | Recorded as `blocking=true`; exits 1 when the rendered verdict is FAIL. |
 | `--smoke` | Print the provider plan (commands it *would* run) + wiring. No network. |
 | `--remote-url <url>` | Resolve a numeric reference to a project. |
 
@@ -173,8 +187,8 @@ remote URL`). GitHub remotes resolve to PRs; GitLab remotes resolve to MRs.
 |-----------|-----------|------|
 | `review <ref> --smoke --no-comment` | Print plan only, no network | 0 |
 | `review <ref> --no-comment` (no `--fetch`) | Print "handoff" (the planned commands + prompt path) | 0 |
-| `review <ref> --no-comment --fetch` | Fetch + render report to stdout, no posting | 0 (1 on fetch error) |
-| `review <ref> --fetch` | Fetch + render + **post** via `gh`/`glab` | 0 (1 if auth/posting fails) |
+| `review <ref> --no-comment --fetch` | Fetch + render report to stdout, no posting | 0; with `--blocking`, 1 on FAIL; 1 on fetch error |
+| `review <ref> --fetch` | Fetch + render + **post** via `gh`/`glab` | 0; with `--blocking`, 1 on FAIL; 1 on auth/posting error |
 | `review <ref>` (no `--fetch`, no `--no-comment`) | Error: live posting from CLI not enabled; use a flag | 2 |
 
 ### Bot recipes
@@ -211,12 +225,11 @@ bun run samorev review https://github.com/OWNER/REPO/pull/123 --no-comment --blo
 | Code | Meaning |
 |------|---------|
 | `0` | Successful smoke / handoff / fetch-report / posted comment |
-| `1` | Provider fetch failed, required prompt file missing, or posting/auth failed |
+| `1` | With `--blocking`, a rendered FAIL verdict; otherwise provider fetch/prompt/posting/auth failure |
 | `2` | Invalid arguments or invalid/missing reference |
 
-> A FAIL **verdict** (CI failing / draft) still exits `0` on a successful
-> `--fetch`. A bot must parse the report body (Section 5) to get the verdict —
-> the process exit code reflects whether the *fetch ran*, not the verdict.
+> Because both a completed blocking verdict and a tooling/auth failure can exit
+> `1`, a bot must still parse the report body and metadata (Section 5).
 
 ---
 
@@ -241,6 +254,52 @@ no_comment=true
 live_posting=not-run
 ```
 
+For GitHub verdict publishers that wait on the review itself, set
+`SAMOREV_IGNORED_GITHUB_CHECK_RUN_IDS` to the comma-separated database IDs of
+the current publisher runs, plus `SAMOREV_IGNORED_GITHUB_CHECK_NAME`
+and `SAMOREV_IGNORED_GITHUB_CHECK_APP_ID` to their expected identity. Matching
+failures remain blocking; matching pending or successful runs are excluded. The
+metadata then appends `excluded_self=N`; `total`
+counts evaluated independent checks. A self-only set reports
+`ci_status=self-only` and fails closed. This
+exclusion does not apply to GitLab's aggregate pipeline status.
+
+Resolve trusted IDs from the current base-controlled publisher run, not by
+accepting a PR-supplied job name or status target. This step must run from a
+`pull_request_target` or otherwise base-pinned workflow; a plain `pull_request`
+workflow can use a PR-controlled workflow definition for same-repository
+branches. Do not check out or execute PR code in the privileged publisher job.
+In that GitHub Actions step:
+
+```yaml
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  PR_URL: ${{ github.event.pull_request.html_url }}
+run: |
+  trusted_run_ids="$(
+    gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" |
+      jq -r --arg run_id "$GITHUB_RUN_ID" --arg publisher "base-controlled samorev publisher" \
+        '[.[].check_runs[] | select(.name == $publisher and ((.html_url // "") | contains("/actions/runs/" + $run_id + "/"))) | .id] | unique | join(",")'
+  )"
+  export SAMOREV_IGNORED_GITHUB_CHECK_RUN_IDS="$trusted_run_ids"
+  export SAMOREV_IGNORED_GITHUB_CHECK_NAME="base-controlled samorev publisher"
+  export SAMOREV_IGNORED_GITHUB_CHECK_APP_ID="15368"
+  bun run samorev review "$PR_URL" --blocking --fetch
+```
+
+A missing run ID list excludes no runs but retains a valid publisher name/app
+identity, so an earlier successful publisher cannot count as independent CI.
+Malformed name/app configuration reports an unknown CI state. A stale or
+mismatched exact identity excludes nothing and remains blocking. These cases
+fail closed rather than silently dropping unrelated CI.
+
+The freshly resolved Checks API IDs are the security boundary. App `15368`
+identifies GitHub Actions generally—including PR-controlled workflows—and job
+names are author-controllable; app/name comparisons are consistency checks, not
+independent identity factors. Never take run IDs from PR input or static
+configuration.
+
 Verdict logic for a bot:
 
 - **PASS** ⇔ the body contains `**Result: PASSED**` (and no `### BLOCKING
@@ -253,22 +312,22 @@ Verdict logic for a bot:
 
 ## 6. Gotchas & troubleshooting
 
-- **`--blocking` does not affect exit code.** As of the current CLI it only sets
-  `blocking=true` in the output. To gate CI on a FAIL, parse the report body, not
-  `$?`. (`SPEC.md §4` states exit-on-findings is deferred.)
-- **PASS/FAIL is CI + draft only.** The CLI does not run the AI agents, so a
-  clean diff with a green pipeline returns PASS even if it contains bugs. Use the
-  `/review-mr` slash command (Surface B) for actual code analysis.
-- **GitLab public-fallback CI is approximate.** The gate reads
-  `head_pipeline.status`; the public REST API metadata often lacks it, so the CLI
-  falls back to the MR `state` (e.g. `merged`, `opened`) as the "CI status".
-  That can render a spurious CI finding (e.g. `Pipeline status is merged`) on
-  public MRs fetched without `glab` auth. Authenticate `glab` for accurate CI.
+- **`--blocking` makes FAIL exit 1.** Parse the body as well because fetch,
+  prompt, auth, and posting failures also use exit 1 without a completed verdict.
+- **PASS/FAIL includes the bounded Claude review.** A model transport or parse
+  error fails closed rather than silently producing an empty finding set.
+- **GitLab public-fallback CI fails closed when pipeline data is absent.** The
+  gate reads `head_pipeline.status`, then the legacy `pipeline.status`; public
+  REST metadata often lacks both, so the CLI normalizes it to `ci_status=none`.
+  That is a HIGH gate finding and exits 1 under `--blocking`. Authenticate
+  `glab` so the review can evaluate the real pipeline.
 - **Expired `glab` token silently falls back to public API.** `glab auth status`
   showing an expired token does **not** fail a public-MR fetch; it quietly uses
   the unauthenticated public REST API (and cannot fetch private MRs or post).
 - **`gh` returns exit 1 for a nonexistent PR number** → CLI prints
   `Error: Command failed (1) for gh pr view ...` and exits 1. Verify the number.
+- **`gh api` reports `unknown flag: --slurp`** → upgrade GitHub CLI to 2.48.0
+  or newer; `samorev` uses slurped pagination so every check run is evaluated.
 - **`Error: review prompt not found`** → run from the repo root (or a full
   checkout); the CLI resolves `.claude/commands/review-mr.md` relative to the
   package, and exits 1 if it is missing.
@@ -276,6 +335,10 @@ Verdict logic for a bot:
   run `gh auth status` / `glab auth status` and re-auth.
 - **Invalid JSON from provider** → `Error: <tool> returned invalid JSON ...`
   (exit 1); usually a `gh`/`glab` auth or rate-limit problem.
+- **GitHub reports zero check runs, or GitHub/GitLab has no successful
+  independent pipeline** → `ci_status=none` is a HIGH gate finding;
+  `--blocking` exits 1. This is intentionally fail-closed and is a breaking
+  change for repositories that previously reviewed changes without CI.
 
 ---
 

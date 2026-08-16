@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fetchReviewSummary, FetchError } from "./fetchReport";
+import { fetchReviewSummary, FetchError, type GitHubSelfCheck } from "./fetchReport";
 import { assertProviderAuth, postProviderSummary, PostingError, postingTool } from "./providerPosting";
 import { parseReviewReference, planFetch, ReviewReferenceError } from "./providerPlanning";
 
@@ -65,6 +65,10 @@ async function review(args: ReviewArgs): Promise<number> {
   }
 
   if (args.fetch) {
+    const githubSelfCheck = parseGitHubSelfCheckEnv(process.env);
+    if (githubSelfCheck && reference.provider !== "github") {
+      console.error("GitHub self-check exclusion is ignored for GitLab reviews");
+    }
     try {
       if (args.noComment) {
         const { report, outcome } = await fetchReviewSummary(reference, plan, relative(repoRoot, promptPath), {
@@ -72,23 +76,30 @@ async function review(args: ReviewArgs): Promise<number> {
           noComment: true,
           postedBy: "local",
           livePosting: "not-run",
+          githubSelfCheck,
         });
         console.log(report);
         return args.blocking && outcome === "FAIL" ? 1 : 0;
       }
 
       const tool = postingTool(reference);
-      const { report: blockedReport } = await fetchReviewSummary(reference, plan, relative(repoRoot, promptPath), {
-        blocking: args.blocking,
-        noComment: false,
-        postedBy: tool,
-        livePosting: "blocked",
-      });
-
       try {
         await assertProviderAuth(reference);
       } catch (error) {
         if (error instanceof PostingError) {
+          let blockedReport: string;
+          try {
+            ({ report: blockedReport } = await fetchReviewSummary(reference, plan, relative(repoRoot, promptPath), {
+              blocking: args.blocking,
+              noComment: false,
+              postedBy: tool,
+              livePosting: "blocked",
+              githubSelfCheck,
+            }));
+          } catch (reportError) {
+            console.error(error.message);
+            throw reportError;
+          }
           console.log(blockedReport);
           console.error(error.message);
           return 1;
@@ -101,9 +112,21 @@ async function review(args: ReviewArgs): Promise<number> {
         noComment: false,
         postedBy: tool,
         livePosting: "posted",
+        githubSelfCheck,
       });
-      await postProviderSummary(reference, plan, postedReport);
-      console.log(postedReport);
+      try {
+        await postProviderSummary(reference, plan, postedReport);
+        console.log(postedReport);
+      } catch (error) {
+        if (error instanceof PostingError) {
+          try {
+            console.log(markPostingBlocked(postedReport));
+          } catch (metadataError) {
+            console.error(`Error: ${metadataError instanceof Error ? metadataError.message : String(metadataError)}`);
+          }
+        }
+        throw error;
+      }
       return args.blocking && postedOutcome === "FAIL" ? 1 : 0;
     } catch (error) {
       if (error instanceof FetchError) {
@@ -125,6 +148,35 @@ async function review(args: ReviewArgs): Promise<number> {
 
   console.error("Error: live posting from the CLI is not enabled yet. Use --no-comment, --fetch, or --smoke.");
   return 2;
+}
+
+export function markPostingBlocked(report: string): string {
+  const blockStart = report.lastIndexOf("\n```text\n");
+  const blockEnd = blockStart < 0 ? -1 : report.indexOf("\n```", blockStart + 9);
+  if (blockStart < 0 || blockEnd < 0) throw new Error("posting metadata block is missing; refusing to print a stale posting state");
+  const metadata = report.slice(blockStart, blockEnd);
+  if (!/^live_posting=posted$/m.test(metadata)) throw new Error("live_posting=posted metadata is missing; refusing to print a stale posting state");
+  const blockedMetadata = metadata.replace(/^live_posting=posted$/m, "live_posting=blocked");
+  return `${report.slice(0, blockStart)}${blockedMetadata}${report.slice(blockEnd)}`;
+}
+
+export function parseGitHubSelfCheckEnv(
+  env: Record<string, string | undefined>,
+  warn: (message: string) => void = console.error,
+): GitHubSelfCheck | undefined {
+  const rawIds = (env.SAMOREV_IGNORED_GITHUB_CHECK_RUN_IDS ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+  const runIds = rawIds.filter((value) => /^\d+$/.test(value));
+  const name = (env.SAMOREV_IGNORED_GITHUB_CHECK_NAME ?? "").trim();
+  const appId = (env.SAMOREV_IGNORED_GITHUB_CHECK_APP_ID ?? "").trim();
+  const configured = rawIds.length > 0 || Boolean(name) || Boolean(appId);
+  if (!configured) return undefined;
+  if (runIds.length !== rawIds.length) warn("Ignoring non-numeric GitHub self-check run IDs");
+  if (!name || !/^\d+$/.test(appId)) {
+    warn("Warning: incomplete or invalid GitHub self-check exclusion configuration; run IDs, exact name, and numeric app ID are all required; excluding nothing");
+    return { runIds, name, appId, invalid: true };
+  }
+  if (runIds.length === 0) warn("Warning: no valid GitHub self-check run IDs; excluding no runs while retaining publisher identity");
+  return { runIds, name, appId };
 }
 
 function parseReviewArgs(argv: string[]): ReviewArgs {

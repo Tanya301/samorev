@@ -3,6 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fetchReviewSummary, FetchError } from "../src/fetchReport";
 import { parseReviewReference, planFetch } from "../src/providerPlanning";
+import { markPostingBlocked } from "../src/cli";
 
 const repoRoot = import.meta.dir.replace(/\/tests$/, "");
 const fakeBin = join(repoRoot, ".tmp-bun-test-bin");
@@ -37,6 +38,9 @@ async function runSamorev(args: string[], extraEnv: Record<string, string> = {})
     cwd: repoRoot,
     env: {
       ...process.env,
+      SAMOREV_IGNORED_GITHUB_CHECK_RUN_IDS: "",
+      SAMOREV_IGNORED_GITHUB_CHECK_NAME: "",
+      SAMOREV_IGNORED_GITHUB_CHECK_APP_ID: "",
       ...extraEnv,
       PATH: `${fakeBin}:${originalPath}`,
     },
@@ -76,6 +80,16 @@ beforeEach(async () => {
   await mkdir(fakeBin, { recursive: true });
   // Always stub claude so tests don't call the real LLM.
   await writeFakeClaude();
+});
+
+it("rewrites only posting metadata when an earlier standalone marker exists", () => {
+  const report = "finding evidence\nlive_posting=posted\nstill finding\n```text\nprovider=github\nlive_posting=posted\nextra=value\n```";
+  expect(markPostingBlocked(report)).toBe(
+    "finding evidence\nlive_posting=posted\nstill finding\n```text\nprovider=github\nlive_posting=blocked\nextra=value\n```",
+  );
+  expect(() => markPostingBlocked("report without metadata")).toThrow("refusing to print a stale posting state");
+  expect(() => markPostingBlocked("report\n```text\nlive_posting=blocked\n```"))
+    .toThrow("live_posting=posted metadata is missing");
 });
 
 afterEach(async () => {
@@ -162,6 +176,32 @@ describe("bun samorev CLI", () => {
     expect(postedMetadata).toContain("live_posting=posted");
   });
 
+  it("prints a blocked report when provider posting fails", async () => {
+    await writeGitHubFake();
+    await writeFakeClaude([
+      "FINDING:",
+      "- severity: MEDIUM",
+      "- confidence: 8",
+      "- area: Bugs",
+      "- issue: finding text contains live_posting=posted before metadata",
+      "- evidence: synthetic regression fixture",
+      "- fix: anchor metadata replacement",
+    ].join("\n"));
+    const result = await output(
+      await runSamorev([
+        "review",
+        "https://github.com/example-org/example-repo/pull/17",
+        "--fetch",
+      ], { SAMOREV_FAKE_AUTH: "ok", SAMOREV_FAKE_POST: "fail" }),
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Provider posting failed");
+    expect(result.stdout).toContain("## samorev Code Review Report");
+    expect(result.stdout).toContain("finding text contains live_posting=posted");
+    expect(expectMetadataDetails(result.stdout)).toContain("live_posting=blocked");
+  });
+
   it("blocks GitHub posting when gh auth is unavailable", async () => {
     const postLog = join(fakeBin, "github-post.txt");
     await writeGitHubFake(postLog);
@@ -184,6 +224,22 @@ describe("bun samorev CLI", () => {
     expect(metadata).toContain("posted_by=gh");
     expect(metadata).toContain("live_posting=blocked");
     await expect(readFile(postLog, "utf8")).rejects.toThrow();
+  });
+
+  it("keeps both auth and fetch diagnostics when blocked-report generation fails", async () => {
+    await writeGitHubFake(undefined, true);
+
+    const result = await output(
+      await runSamorev([
+        "review",
+        "https://github.com/example-org/example-repo/pull/17",
+        "--fetch",
+      ], { SAMOREV_FAKE_AUTH: "missing" }),
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Provider posting blocked");
+    expect(result.stderr).toContain("returned invalid JSON");
   });
 
   it("does not invoke provider posting in --no-comment mode", async () => {
@@ -270,6 +326,28 @@ describe("bun samorev CLI", () => {
     expect(metadata).toContain("posted_by=glab");
     expect(metadata).toContain("live_posting=blocked");
     await expect(readFile(postLog, "utf8")).rejects.toThrow();
+  });
+
+  it("fails closed when a GitLab MR has no pipeline", async () => {
+    await writeGitLabFake(undefined, false);
+    const result = await output(
+      await runSamorev([
+        "review",
+        "https://gitlab.com/example-group/example-project/-/merge_requests/42",
+        "--no-comment",
+        "--blocking",
+        "--fetch",
+      ], {
+        SAMOREV_IGNORED_GITHUB_CHECK_RUN_IDS: "303",
+        SAMOREV_IGNORED_GITHUB_CHECK_NAME: "base-controlled samorev publisher",
+        SAMOREV_IGNORED_GITHUB_CHECK_APP_ID: "15368",
+      }),
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("GitHub self-check exclusion is ignored for GitLab reviews");
+    expect(result.stdout).toContain("**HIGH** `CI/Pipeline` - Pipeline status is none");
+    expect(expectMetadataDetails(result.stdout)).toContain("ci_status=none");
   });
 
   it("renders GitLab public API fallback summary fields", async () => {
@@ -427,6 +505,43 @@ describe("bun samorev CLI", () => {
     );
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("**Result: PASSED**");
+    expect(expectMetadataDetails(result.stdout)).toContain("ci_summary=total=2 success=2 failure=0 pending=0 other=0");
+  });
+
+  it("passes independent CI while visibly excluding the trusted pending publisher", async () => {
+    await writeGitHubPassFake(true);
+    const result = await output(
+      await runSamorev([
+        "review",
+        "https://github.com/example-org/example-repo/pull/17",
+        "--no-comment",
+        "--fetch",
+        "--blocking",
+      ], {
+        SAMOREV_IGNORED_GITHUB_CHECK_RUN_IDS: "303",
+        SAMOREV_IGNORED_GITHUB_CHECK_NAME: "base-controlled samorev publisher",
+        SAMOREV_IGNORED_GITHUB_CHECK_APP_ID: "15368",
+      }),
+    );
+    expect(result.exitCode).toBe(0);
+    expect(expectVisibleReport(result.stdout)).toContain("Excluded 1 explicitly trusted non-failing samorev publisher check run");
+    expect(expectMetadataDetails(result.stdout)).toContain("excluded_self=1");
+  });
+
+  it("keeps a pending publisher blocking unless its exact check-run id is trusted", async () => {
+    await writeGitHubPassFake(true);
+    const result = await output(
+      await runSamorev([
+        "review",
+        "https://github.com/example-org/example-repo/pull/17",
+        "--no-comment",
+        "--fetch",
+        "--blocking",
+      ]),
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).toContain("Pipeline status is pending");
+    expect(expectMetadataDetails(result.stdout)).not.toContain("excluded_self=");
   });
 
   it("plans numeric GitHub references from remote URL", () => {
@@ -438,6 +553,7 @@ describe("bun samorev CLI", () => {
     expect(reference.projectPath).toBe("example-org/example-repo");
     expect(plan.metadataCommand.join(" ")).toContain("gh pr view 17 --repo example-org/example-repo");
     expect(plan.ciCommand.join(" ")).toContain("repos/example-org/example-repo/commits/pull/17/head/check-runs");
+    expect(plan.ciCommand).toContain("--slurp");
   });
 
   it("rejects invalid references without a traceback", async () => {
@@ -488,13 +604,13 @@ function expectMetadataDetails(report: string): string {
   return match?.[1] ?? "";
 }
 
-async function writeGitHubFake(postLog?: string) {
+async function writeGitHubFake(postLog?: string, invalidMetadata = false) {
   await writeFile(
     join(fakeBin, "gh"),
     `#!/usr/bin/env bun
 const args = Bun.argv.slice(2);
 if (args.slice(0, 3).join(" ") === "pr view 17") {
-  console.log(JSON.stringify({ title: "Demo PR", state: "OPEN", isDraft: false }));
+  console.log(${invalidMetadata ? '"{invalid"' : 'JSON.stringify({ title: "Demo PR", state: "OPEN", isDraft: false })'});
 } else if (args.slice(0, 3).join(" ") === "pr diff 17") {
   Bun.write(Bun.stdout, "diff --git a/app.ts b/app.ts\\n+console.log('demo')\\n-old = true\\n");
 } else if (args.slice(0, 2).join(" ") === "api repos/example-org/example-repo/issues/17/comments") {
@@ -502,7 +618,8 @@ if (args.slice(0, 3).join(" ") === "pr view 17") {
 } else if (args.slice(0, 2).join(" ") === "api repos/example-org/example-repo/pulls/17/commits") {
   console.log(JSON.stringify([{ sha: "abc" }, { sha: "def" }, { sha: "ghi" }]));
 } else if (args.slice(0, 2).join(" ") === "api repos/example-org/example-repo/commits/pull/17/head/check-runs") {
-  console.log(JSON.stringify({ total_count: 2, check_runs: [{ name: "unit", conclusion: "success" }, { name: "lint", conclusion: "failure" }] }));
+  if (!args.includes("--slurp")) process.exit(43);
+  console.log(JSON.stringify([{ total_count: 2, check_runs: [{ name: "unit", conclusion: "success" }, { name: "lint", conclusion: "failure" }] }]));
 } else if (args.slice(0, 2).join(" ") === "auth status") {
   if (process.env.SAMOREV_FAKE_AUTH === "ok") {
     console.error("Logged in to github.com");
@@ -511,6 +628,10 @@ if (args.slice(0, 3).join(" ") === "pr view 17") {
     process.exit(1);
   }
 } else if (args.slice(0, 3).join(" ") === "pr comment 17") {
+  if (process.env.SAMOREV_FAKE_POST === "fail") {
+    console.error("synthetic post failure");
+    process.exit(1);
+  }
   const index = args.indexOf("--body");
   const body = args[index + 1] ?? "";
   await Bun.write(${JSON.stringify(postLog ?? join(fakeBin, "unexpected-github-post.txt"))}, body);
@@ -523,7 +644,14 @@ if (args.slice(0, 3).join(" ") === "pr view 17") {
   );
 }
 
-async function writeGitHubPassFake() {
+async function writeGitHubPassFake(includePublisher = false) {
+  const checkRuns = [
+    { id: 101, name: "unit", conclusion: "success" },
+    { id: 202, name: "lint", conclusion: "success" },
+    ...(includePublisher
+      ? [{ id: 303, name: "base-controlled samorev publisher", app: { id: 15368 }, status: "in_progress", conclusion: null }]
+      : []),
+  ];
   await writeFile(
     join(fakeBin, "gh"),
     `#!/usr/bin/env bun
@@ -537,7 +665,8 @@ if (args.slice(0, 3).join(" ") === "pr view 17") {
 } else if (args.slice(0, 2).join(" ") === "api repos/example-org/example-repo/pulls/17/commits") {
   console.log(JSON.stringify([{ sha: "abc" }, { sha: "def" }, { sha: "ghi" }]));
 } else if (args.slice(0, 2).join(" ") === "api repos/example-org/example-repo/commits/pull/17/head/check-runs") {
-  console.log(JSON.stringify({ total_count: 2, check_runs: [{ name: "unit", conclusion: "success" }, { name: "lint", conclusion: "success" }] }));
+  if (!args.includes("--slurp")) process.exit(43);
+  console.log(JSON.stringify([${JSON.stringify({ total_count: checkRuns.length, check_runs: checkRuns })}]));
 } else if (args.slice(0, 2).join(" ") === "auth status") {
   console.error("Logged in to github.com");
 } else {
@@ -549,13 +678,16 @@ if (args.slice(0, 3).join(" ") === "pr view 17") {
   );
 }
 
-async function writeGitLabFake(postLog?: string) {
+async function writeGitLabFake(postLog?: string, includePipeline = true) {
+  const metadata = includePipeline
+    ? { title: "GitLab demo", state: "opened", draft: false, head_pipeline: { status: "failed" } }
+    : { title: "GitLab demo", state: "opened", draft: false };
   await writeFile(
     join(fakeBin, "glab"),
     `#!/usr/bin/env bun
 const args = Bun.argv.slice(2);
 if (args.slice(0, 2).join(" ") === "api projects/example-group%2Fexample-project/merge_requests/42") {
-  console.log(JSON.stringify({ title: "GitLab demo", state: "opened", draft: false, head_pipeline: { status: "failed" } }));
+  console.log(${JSON.stringify(JSON.stringify(metadata))});
 } else if (args.slice(0, 3).join(" ") === "mr diff 42") {
   Bun.write(Bun.stdout, "diff --git a/app.ts b/app.ts\\n+console.log('demo')\\n-old = true\\n");
 } else if (args.slice(0, 2).join(" ") === "api projects/example-group%2Fexample-project/merge_requests/42/notes?per_page=10&sort=desc") {

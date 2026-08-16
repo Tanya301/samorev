@@ -33,6 +33,13 @@ export type FetchReviewResult = {
   outcome: ReviewOutcome;
 };
 
+export type GitHubSelfCheck = {
+  runIds: readonly string[];
+  name: string;
+  appId: string;
+  invalid?: boolean;
+};
+
 /** Per-area finding counts parsed from LLM output. */
 type LlmFindings = {
   /** High-confidence findings (confidence 8-10): appear in Findings column */
@@ -78,6 +85,7 @@ export async function fetchReviewSummary(
      * Production code uses the real claude subprocess via runClaude().
      */
     claudeRunner?: ClaudeRunner;
+    githubSelfCheck?: GitHubSelfCheck;
   } = { blocking: false },
 ): Promise<FetchReviewResult> {
   const runCommand = options.runCommand ?? runText;
@@ -92,7 +100,7 @@ export async function fetchReviewSummary(
   }
 
   const diff = summarizeDiff(fetched.diff);
-  const ci = summarizeCi(reference.provider, fetched.ci);
+  const ci = summarizeCi(reference.provider, fetched.ci, options.githubSelfCheck);
   const title = String(fetched.metadata.title ?? fetched.metadata.source_branch ?? "(untitled)");
   const state = String(fetched.metadata.state ?? fetched.metadata.merge_status ?? "unknown");
   const draft = metadataDraft(reference.provider, fetched.metadata);
@@ -606,24 +614,49 @@ function countJsonItems(value: unknown): number {
   return 0;
 }
 
-function summarizeCi(provider: Provider, ci: unknown): { status: string; summary: string } {
-  return provider === "github" ? summarizeGitHubCi(ci) : summarizeGitLabCi(ci);
+function summarizeCi(provider: Provider, ci: unknown, githubSelfCheck?: GitHubSelfCheck): { status: string; summary: string; excludedSelf?: number } {
+  return provider === "github" ? summarizeGitHubCi(ci, githubSelfCheck) : summarizeGitLabCi(ci);
 }
 
-function summarizeGitHubCi(ci: unknown): { status: string; summary: string } {
-  const checkRuns = isRecord(ci) && Array.isArray(ci.check_runs) ? ci.check_runs : [];
+export function summarizeGitHubCi(ci: unknown, githubSelfCheck?: GitHubSelfCheck): { status: string; summary: string; excludedSelf: number } {
+  const pages = Array.isArray(ci) ? ci : [ci];
+  if (!pages.every((page) => isRecord(page) && Array.isArray(page.check_runs))) {
+    return {
+      status: "unknown",
+      summary: "total=0 success=0 failure=0 pending=0 other=0",
+      excludedSelf: 0,
+    };
+  }
+  const checkRuns = pages.flatMap((page) => (page as Record<string, unknown>).check_runs as unknown[]);
   const counts = { success: 0, failure: 0, pending: 0, other: 0 };
+  let genuineSuccess = 0;
+  let excludedSelf = 0;
+  const trustedIds = new Set(githubSelfCheck?.runIds.filter((id) => /^\d+$/.test(id)) ?? []);
+  const trustedName = githubSelfCheck?.name.trim() ?? "";
+  const trustedAppId = githubSelfCheck?.appId.trim() ?? "";
 
   for (const run of checkRuns) {
     if (!isRecord(run)) {
       counts.other += 1;
       continue;
     }
+    // A trusted samorev publisher is never independent CI. Exclude its pending,
+    // superseded-cancelled, or successful run, but preserve genuine failures.
+    const app = isRecord(run.app) ? run.app : {};
     const conclusion = run.conclusion;
     const status = run.status;
-    if (conclusion === "success") {
+    const publisherIdentity = Boolean(trustedName && trustedAppId
+      && String(run.name ?? "") === trustedName && String(app.id ?? "") === trustedAppId);
+    const trustedPublisher = trustedIds.has(String(run.id ?? "")) && publisherIdentity;
+    const excludablePublisher = conclusion == null || ["success", "skipped", "neutral", "cancelled"].includes(String(conclusion));
+    if (trustedPublisher && excludablePublisher) {
+      excludedSelf += 1;
+      continue;
+    }
+    if (["success", "skipped", "neutral"].includes(String(conclusion))) {
       counts.success += 1;
-    } else if (["failure", "cancelled", "timed_out", "action_required"].includes(String(conclusion))) {
+      if (conclusion === "success" && !publisherIdentity) genuineSuccess += 1;
+    } else if (["failure", "cancelled", "timed_out", "action_required", "stale", "startup_failure"].includes(String(conclusion))) {
       counts.failure += 1;
     } else if (status !== "completed" || conclusion == null) {
       counts.pending += 1;
@@ -632,30 +665,39 @@ function summarizeGitHubCi(ci: unknown): { status: string; summary: string } {
     }
   }
 
-  const total = checkRuns.length;
-  const status = counts.failure
+  const total = counts.success + counts.failure + counts.pending + counts.other;
+  const status = githubSelfCheck?.invalid
+    ? "unknown"
+    : counts.failure
     ? "failure"
     : counts.pending
       ? "pending"
-      : total && counts.success === total
+      : total && counts.success === total && genuineSuccess > 0
         ? "success"
-        : total === 0
+        : total && counts.success === total
+          ? "none"
+        : total === 0 && checkRuns.length > 0
+          ? "self-only"
+          : total === 0
           ? "none"
           : "unknown";
   return {
     status,
-    summary: `total=${total} success=${counts.success} failure=${counts.failure} pending=${counts.pending} other=${counts.other}`,
+    summary: `total=${total} success=${counts.success} failure=${counts.failure} pending=${counts.pending} other=${counts.other}${excludedSelf ? ` excluded_self=${excludedSelf}` : ""}`,
+    excludedSelf,
   };
 }
 
-function summarizeGitLabCi(ci: unknown): { status: string; summary: string } {
+export function summarizeGitLabCi(ci: unknown): { status: string; summary: string } {
   if (!isRecord(ci)) {
     return { status: "unknown", summary: "pipeline_status=unknown" };
   }
-  const pipeline = ci.head_pipeline;
+  const pipeline = isRecord(ci.head_pipeline) ? ci.head_pipeline : ci.pipeline;
   const status = isRecord(pipeline)
     ? String(pipeline.status ?? "unknown")
-    : String(ci.pipeline_status ?? ci.state ?? "unknown");
+    : "pipeline_status" in ci
+    ? String(ci.pipeline_status ?? "none")
+    : "none";
   return { status, summary: `pipeline_status=${status}` };
 }
 
@@ -678,8 +720,9 @@ type GateFinding = {
   fix: string;
 };
 
-function reviewGateFindings(ciStatus: string, draft: boolean): GateFinding[] {
+export function reviewGateFindings(ciStatus: string, draft: boolean): GateFinding[] {
   const findings: GateFinding[] = [];
+  const transient = TRANSIENT_CI_STATUSES.includes(ciStatus);
   if (draft) {
     findings.push({
       area: "Metadata",
@@ -690,15 +733,26 @@ function reviewGateFindings(ciStatus: string, draft: boolean): GateFinding[] {
       fix: "Mark it ready for review before merge.",
     });
   }
-  if (!["success", "none"].includes(ciStatus)) {
+  if (ciStatus === "self-only") {
     findings.push({
       area: "CI/Pipeline",
-      severity: ciStatus === "pending" ? "HIGH" : "CRITICAL",
+      severity: "HIGH",
+      subject: "CI/Pipeline",
+      title: "Pipeline status is self-only",
+      detail: "Only explicitly trusted non-failing samorev publisher checks remained; no independent CI was evaluated.",
+      fix: "Run at least one independent CI check successfully before reviewing.",
+    });
+  } else if (ciStatus !== "success") {
+    findings.push({
+      area: "CI/Pipeline",
+      severity: transient || ciStatus === "none" ? "HIGH" : "CRITICAL",
       subject: "CI/Pipeline",
       title: `Pipeline status is ${ciStatus}`,
       detail: `Provider CI reported status \`${ciStatus}\`.`,
-      fix: ciStatus === "pending"
+      fix: transient
         ? "Wait for CI to finish and rerun review."
+        : ciStatus === "none"
+        ? "Run at least one independent CI check successfully before reviewing."
         : "Fix failing checks and rerun review.",
     });
   }
@@ -711,7 +765,7 @@ function renderRevLikeReport(args: {
   state: string;
   draft: boolean;
   diff: { lines: number; added: number; removed: number; bytes: number };
-  ci: { status: string; summary: string };
+  ci: { status: string; summary: string; excludedSelf?: number };
   findings: GateFinding[];
   llmFindings: LlmFindings;
   /** Whether the LLM runner was invoked successfully (vs. fail-closed path). */
@@ -757,6 +811,9 @@ function renderRevLikeReport(args: {
     "|----------|----------|",
     `| ${formatCiBadge(args.ci.status)} | Not reported |`,
     "",
+    ...(args.ci.excludedSelf
+      ? [`> Excluded ${args.ci.excludedSelf} explicitly trusted non-failing samorev publisher check run${args.ci.excludedSelf === 1 ? "" : "s"} from the independent-CI gate.`, ""]
+      : []),
     "---",
     "",
   ];
@@ -844,19 +901,18 @@ function renderRevLikeReport(args: {
   return lines.join("\n");
 }
 
-function formatCiBadge(status: string): string {
+export function formatCiBadge(status: string): string {
   const normalized = status.toLowerCase();
   if (["success", "passed"].includes(normalized)) {
     return "PASS";
   }
-  if (["pending", "running"].includes(normalized)) {
+  if (TRANSIENT_CI_STATUSES.includes(normalized)) {
     return "PENDING";
   }
-  if (["failure", "failed"].includes(normalized)) {
-    return "FAIL";
-  }
-  return status || "unknown";
+  return "FAIL";
 }
+
+export const TRANSIENT_CI_STATUSES: readonly string[] = ["pending", "running", "created", "preparing", "scheduled", "waiting_for_resource"];
 
 function metadataAuthor(metadata: Record<string, unknown>): string {
   const author = metadata.author;
@@ -883,4 +939,3 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function displayCommand(command: string[]): string {
   return command.join(" ");
 }
-

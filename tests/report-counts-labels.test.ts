@@ -33,7 +33,7 @@ import { parseReviewReference, planFetch } from "../src/providerPlanning";
 // ──────────────────────────────────────────────────────────────────────────────
 
 const greenGitHubMeta = { title: "Test PR", state: "OPEN", isDraft: false };
-const greenGitHubCi = { check_runs: [{ name: "ci", conclusion: "success" }] };
+const greenGitHubCi = [{ check_runs: [{ name: "ci", conclusion: "success" }] }];
 const sampleDiff = [
   "diff --git a/foo.ts b/foo.ts",
   "--- a/foo.ts",

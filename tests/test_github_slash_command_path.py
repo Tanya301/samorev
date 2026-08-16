@@ -28,7 +28,10 @@ def test_slash_command_initializes_arguments_and_captures_github_fetch_data():
 
 def test_github_no_comment_provider_path_smoke():
     env = {
-        **os.environ,
+        **{
+            key: value for key, value in os.environ.items()
+            if not key.startswith("SAMOREV_IGNORED_GITHUB_CHECK_")
+        },
         "SAMOREV_SMOKE_REF": "https://github.com/example-org/example-repo/pull/17",
     }
     result = subprocess.run(

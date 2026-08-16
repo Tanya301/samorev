@@ -111,7 +111,10 @@ case "$ARGS" in
   *"pr diff"*)    cat "${diffFile}" ;;
   *"issues"*"comments"*) printf '[]' ;;
   *"pulls"*"commits"*)   printf '[{"sha":"abc"}]' ;;
-  *"check-runs"*) printf '{"check_runs":[{"name":"ci","conclusion":"success"}]}' ;;
+  *"check-runs"*)
+    case "$ARGS" in *"--slurp"*) ;; *) exit 43 ;; esac
+    printf '[{"check_runs":[{"name":"ci","conclusion":"success"}]}]'
+    ;;
   *"auth status"*) echo "ok" >&2 ;;
   *) echo "unexpected gh: $*" >&2; exit 42 ;;
 esac

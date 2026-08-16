@@ -68,14 +68,16 @@ Modes:
 
 - `--fetch`: execute provider metadata, diff, comments, commits, and CI fetches; renders a PASS/FAIL review-gate comment and posts it provider-native unless `--no-comment` is set.
 - `--smoke`: render provider plan and prompt wiring; no provider network fetch.
-- `--blocking`: report blocking-mode intent in output; exit semantics for actual findings are deferred until agent execution is wired into the CLI.
+- `--blocking`: report blocking-mode intent and exit `1` when the rendered verdict is FAIL. Exit `1` also covers fetch/auth/posting errors, so bots parse the report shape to distinguish them.
 - no `--fetch` and `--no-comment`: print handoff instructions.
 
 Exit behavior:
 
-- `0`: successful smoke, handoff, fetch report, or provider-native summary post.
-- `1`: provider fetch failed or required prompt missing.
-- `1`: posting requested but provider auth/posting failed; output includes `live_posting=blocked` for auth blockers.
+- `0`: successful smoke/handoff, or a fetch/post whose verdict is PASS (also a
+  non-blocking FAIL when `--blocking` was not requested).
+- `1`: a rendered FAIL verdict with `--blocking`, provider fetch/prompt failure,
+  or provider auth/posting failure. Parse the report shape to distinguish them;
+  auth blockers include `live_posting=blocked` when a report could be rendered.
 - `2`: invalid arguments or invalid reference.
 
 ## 5. Provider Behavior
@@ -90,10 +92,23 @@ Fetches:
 - Diff: `gh pr diff <number> --repo <owner>/<repo>`
 - Comments: `gh api repos/<owner>/<repo>/issues/<number>/comments --paginate`
 - Commits: `gh api repos/<owner>/<repo>/pulls/<number>/commits --paginate`
-- CI: `gh api repos/<owner>/<repo>/commits/pull/<number>/head/check-runs --paginate`
+- CI: `gh api repos/<owner>/<repo>/commits/pull/<number>/head/check-runs --paginate --slurp`
 - Posting: `gh pr comment <number> --repo <owner>/<repo> --body <summary>`
 
-CI summary buckets: `success`, `failure`, `pending`, `other`.
+CI summary buckets: `success`, `failure`, `pending`, `other`. The `success`
+bucket counts non-blocking `success`, `skipped`, and `neutral` conclusions; at
+least one genuine `success` is still required for `ci_status=success`, so
+`ci_status` is the authoritative gate signal. A trusted GitHub
+runner may set `SAMOREV_IGNORED_GITHUB_CHECK_RUN_IDS` plus the exact publisher
+name and app ID. The comma-separated database IDs, resolved fresh from a
+base-controlled workflow run, are the security boundary. GitHub Actions app
+`15368` is shared by trusted and PR-controlled workflows and job names are
+author-controllable, so name/app checks provide consistency—not identity.
+Matching publisher failures remain blocking; matching pending or successful
+publisher runs are excluded because they are not independent CI.
+Exclusions are reported as `excluded_self=N`; if exclusion leaves no
+independent CI, status is `self-only` and the gate fails closed. GitLab uses its
+aggregate pipeline status and does not support this exclusion.
 
 ### GitLab
 
@@ -107,7 +122,8 @@ Fetches:
 - Diff: MR diff text or rendered public API diff entries.
 - Comments: notes; inaccessible notes become `comments_count=0` only in public fallback.
 - Commits: MR commits.
-- CI: `head_pipeline.status` when present; otherwise provider state fallback.
+- CI: `head_pipeline.status`, then legacy `pipeline.status`; missing pipeline
+  data normalizes to `none` and fails closed under `--blocking`.
 - Posting: `glab mr comment <number> --repo <group>/<project> -m <summary>`
 
 ## 6. Architecture

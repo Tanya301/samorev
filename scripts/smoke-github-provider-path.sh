@@ -37,9 +37,9 @@ JSON
 [{"commit":{"committer":{"date":"2026-05-10T12:10:00Z"}}}]
 JSON
       ;;
-    "api repos/example-org/example-repo/commits/pull/17/head/check-runs --paginate")
+    "api repos/example-org/example-repo/commits/pull/17/head/check-runs --paginate --slurp")
       cat <<'JSON'
-{"check_runs":[{"name":"ci","status":"completed","conclusion":"success","html_url":"https://github.com/example-org/example-repo/actions/runs/12345/jobs/67890"}]}
+[{"check_runs":[{"name":"ci","status":"completed","conclusion":"success","html_url":"https://github.com/example-org/example-repo/actions/runs/12345/jobs/67890"}]}]
 JSON
       ;;
     *)
@@ -60,14 +60,9 @@ DIFF_CONTENT=$(eval "$DIFF_COMMAND")
 COMMENTS_JSON=$(eval "$COMMENTS_COMMAND")
 COMMITS_JSON=$(eval "$COMMITS_COMMAND")
 CI_JSON=$(eval "$CI_COMMAND")
-
-PIPELINE_STATUS=$(echo "$CI_JSON" | jq -r '
-  (.check_runs // []) as $runs |
-  if ($runs | length) == 0 then "unknown"
-  elif any($runs[]; (.conclusion // "") == "failure" or (.conclusion // "") == "timed_out" or (.conclusion // "") == "cancelled") then "failed"
-  elif all($runs[]; (.conclusion // "") == "success" or (.conclusion // "") == "skipped" or (.conclusion // "") == "neutral") then "success"
-  elif any($runs[]; (.status // "") == "queued") then "pending"
-  else "running" end')
+if ! PIPELINE_STATUS=$(printf '%s' "$CI_JSON" | bash "$repo_root/scripts/summarize-github-ci.sh" | jq -er '.status'); then
+  PIPELINE_STATUS="fetch-error"
+fi
 
 echo "provider=$REVIEW_PROVIDER"
 echo "review=$REVIEW_KIND $PROJECT#$REVIEW_NUMBER"

@@ -23,7 +23,7 @@ import { buildReviewPromptForTest } from "../src/fetchReport";
 // ────────────────────────────────────────────────────────────────────────────
 
 const greenGitHubMeta = { title: "Large Diff PR", state: "OPEN", isDraft: false };
-const greenGitHubCi = { check_runs: [{ name: "ci", conclusion: "success" }] };
+const greenGitHubCi = [{ check_runs: [{ name: "ci", conclusion: "success" }] }];
 
 /** Build a diff whose generated file body alone exceeds 40 000 chars. */
 function makeLargeDiff(): { diff: string; sourceFile: string; testFile: string; generatedFile: string } {

@@ -141,7 +141,7 @@ def plan_fetch(reference: ReviewReference) -> FetchPlan:
             api_resource=f"repos/{project}/pulls/{number}",
             comments_command=("gh", "api", f"repos/{project}/issues/{number}/comments", "--paginate"),
             commits_command=("gh", "api", f"repos/{project}/pulls/{number}/commits", "--paginate"),
-            ci_command=("gh", "api", f"repos/{project}/commits/pull/{number}/head/check-runs", "--paginate"),
+            ci_command=("gh", "api", f"repos/{project}/commits/pull/{number}/head/check-runs", "--paginate", "--slurp"),
             failed_jobs_command=("gh", "run", "view", "$RUN_ID", "--repo", project, "--json", "jobs"),
             failed_job_log_command=(
                 "gh",

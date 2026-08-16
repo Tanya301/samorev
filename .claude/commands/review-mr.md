@@ -95,10 +95,8 @@ REMOTE_URL=$(git remote get-url origin 2>/dev/null || true)
 PLAN_SCRIPT=""
 for candidate in \
   "${REV_ROOT:-}/lib/provider_planning.py" \
-  "$PWD/lib/provider_planning.py" \
-  "$PWD/rev/lib/provider_planning.py" \
-  "$HOME/.claude/samorev/lib/provider_planning.py" \
-  "$HOME/.claude/rev/lib/provider_planning.py"; do
+  "${SAMOREV_INSTALL_ROOT:-}/lib/provider_planning.py" \
+  "$HOME/.claude/samorev/lib/provider_planning.py"; do
   if [ -f "$candidate" ]; then
     PLAN_SCRIPT="$candidate"
     break
@@ -118,6 +116,8 @@ fi
 # Commands that require runtime values use quoted variable expansions such as
 # "${RUN_ID}", so bind those variables before evaluating the command string.
 eval "$PLAN_OUTPUT"
+SAMOREV_ROOT=$(cd "$(dirname "$PLAN_SCRIPT")/.." && pwd)
+export SAMOREV_ROOT
 ```
 
 ### Step 2: Fetch review data
@@ -266,24 +266,56 @@ This ensures we:
 
 ```bash
 # Get CI/pipeline status using the provider-specific CI operation.
+SAMOREV_ROOT=""
+for candidate in \
+  "${REV_ROOT:-}" \
+  "${SAMOREV_INSTALL_ROOT:-}" \
+  "$HOME/.claude/samorev"; do
+  if [ -f "$candidate/scripts/summarize-github-ci.sh" ]; then
+    SAMOREV_ROOT=$(cd "$candidate" && pwd)
+    break
+  fi
+done
+export SAMOREV_ROOT
+EXCLUDED_SELF=0
 if [ "$REVIEW_PROVIDER" = "github" ]; then
-  CI_JSON=$(eval "$CI_COMMAND" 2>/dev/null || echo '{"check_runs":[]}')
-  PIPELINE_STATUS=$(echo "$CI_JSON" | jq -r '
-    (.check_runs // []) as $runs |
-    if ($runs | length) == 0 then "unknown"
-    elif any($runs[]; (.conclusion // "") == "failure" or (.conclusion // "") == "timed_out" or (.conclusion // "") == "cancelled") then "failed"
-    elif all($runs[]; (.conclusion // "") == "success" or (.conclusion // "") == "skipped" or (.conclusion // "") == "neutral") then "success"
-    elif any($runs[]; (.status // "") == "queued") then "pending"
-    else "running" end')
-  PIPELINE_ID=$(echo "$CI_JSON" | jq -r '[(.check_runs // [])[] | .html_url // "" | capture("/actions/runs/(?<id>[0-9]+)")? | .id][0] // empty')
-  PIPELINE_URL=$(echo "$CI_JSON" | jq -r '[(.check_runs // [])[] | .html_url // empty][0] // empty')
+  CI_ERROR_FILE=$(mktemp)
+  if ! CI_JSON=$(eval "$CI_COMMAND" 2>"$CI_ERROR_FILE"); then
+    CI_ERROR=$(tr '\n' ' ' <"$CI_ERROR_FILE")
+    echo "Warning: GitHub CI fetch failed: ${CI_ERROR:-unknown provider error}; failing closed" >&2
+    CI_JSON='{"samorev_fetch_error":true}'
+  fi
+  rm -f "$CI_ERROR_FILE"
+  CI_SUMMARY_FALLBACK='{"original":{"samorev_fetch_error":true},"filtered":{"samorev_fetch_error":true},"status":"fetch-error","pipeline_id":"","pipeline_url":"","original_count":0,"filtered_count":0,"excluded_self":0}'
+  if [ ! -f "$SAMOREV_ROOT/scripts/summarize-github-ci.sh" ] ||
+     ! CI_SUMMARY=$(printf '%s' "$CI_JSON" | bash "$SAMOREV_ROOT/scripts/summarize-github-ci.sh"); then
+    echo "Warning: GitHub CI summarizer unavailable at $SAMOREV_ROOT/scripts/summarize-github-ci.sh; failing closed" >&2
+    CI_SUMMARY="$CI_SUMMARY_FALLBACK"
+  fi
+  if ! jq -e 'type == "object" and (.status | type) == "string" and (.status | length) > 0 and (.pipeline_id | type) == "string" and (.pipeline_url | type) == "string" and (.excluded_self | type) == "number" and .excluded_self >= 0' <<<"$CI_SUMMARY" >/dev/null; then
+    echo "Warning: invalid GitHub CI summary; failing closed" >&2
+    CI_SUMMARY="$CI_SUMMARY_FALLBACK"
+  fi
+  PIPELINE_STATUS=$(jq -r '.status' <<<"$CI_SUMMARY")
+  PIPELINE_ID=$(jq -r '.pipeline_id' <<<"$CI_SUMMARY")
+  PIPELINE_URL=$(jq -r '.pipeline_url' <<<"$CI_SUMMARY")
+  EXCLUDED_SELF=$(jq -r '.excluded_self' <<<"$CI_SUMMARY")
   COVERAGE="N/A"
 else
-  MR_JSON=$(eval "$CI_COMMAND")
-  PIPELINE_STATUS=$(echo "$MR_JSON" | jq -r '.head_pipeline.status // .pipeline.status // "unknown"')
-  PIPELINE_ID=$(echo "$MR_JSON" | jq -r '.head_pipeline.id // .pipeline.id // empty')
-  PIPELINE_URL=$(echo "$MR_JSON" | jq -r '.head_pipeline.web_url // .pipeline.web_url // empty')
-  COVERAGE=$(echo "$MR_JSON" | jq -r '.head_pipeline.coverage // .pipeline.coverage // "N/A"')
+  CI_ERROR_FILE=$(mktemp)
+  if ! CI_MR_JSON=$(eval "$CI_COMMAND" 2>"$CI_ERROR_FILE"); then
+    CI_ERROR=$(tr '\n' ' ' <"$CI_ERROR_FILE")
+    echo "Warning: GitLab CI fetch failed: ${CI_ERROR:-unknown provider error}; failing closed" >&2
+    CI_MR_JSON='{}'
+    PIPELINE_STATUS="fetch-error"
+  elif ! PIPELINE_STATUS=$(echo "$CI_MR_JSON" | jq -er '.head_pipeline.status // .pipeline.status // "none"') || [ -z "$PIPELINE_STATUS" ]; then
+    echo "Warning: invalid GitLab CI response; failing closed" >&2
+    PIPELINE_STATUS="fetch-error"
+  fi
+  rm -f "$CI_ERROR_FILE"
+  PIPELINE_ID=$(echo "$CI_MR_JSON" | jq -r '.head_pipeline.id // .pipeline.id // empty' 2>/dev/null || true)
+  PIPELINE_URL=$(echo "$CI_MR_JSON" | jq -r '.head_pipeline.web_url // .pipeline.web_url // empty' 2>/dev/null || true)
+  COVERAGE=$(echo "$CI_MR_JSON" | jq -r '.head_pipeline.coverage // .pipeline.coverage // "N/A"' 2>/dev/null || echo "N/A")
 fi
 ```
 
@@ -320,11 +352,16 @@ fi
 | Status | Action |
 |--------|--------|
 | `success` | Include green checkmark in report, show coverage % |
-| `failed` | **BLOCKING** - Include failed job names and error summary |
-| `running` | Note that CI is still running, review may be preliminary |
-| `pending` | Note that CI hasn't started yet |
-| `canceled` | Note cancellation, may need re-run |
-| `unknown`/empty | Note that no pipeline exists for this MR |
+| `failure` | **BLOCKING** - GitHub CI failed; include failed job names and error summary |
+| `failed` | **BLOCKING** - GitLab CI failed |
+| `self-only` | **BLOCKING** - No independent CI remained after excluding trusted non-failing publisher checks |
+| `fetch-error` | **BLOCKING** - CI could not be fetched; no verdict is trustworthy |
+| `unknown` | **BLOCKING** - CI payload was unusable |
+| `none` | **BLOCKING** - No independent CI was reported yet |
+| `running`, `created`, `preparing`, `scheduled`, `waiting_for_resource` | **BLOCKING (HIGH)** - GitLab CI is still in progress |
+| `pending` | **BLOCKING** - CI is still pending |
+| `canceled` | **BLOCKING** - CI was canceled |
+| any other status | **BLOCKING** - Unrecognized/non-success CI status; treat as failure |
 
 **Include in report header:**
 
@@ -333,11 +370,66 @@ fi
 **Coverage:** {COVERAGE}%
 ```
 
+For GitHub reviews, when `EXCLUDED_SELF` is greater than zero, add this visible line immediately
+below the header: `> Excluded {EXCLUDED_SELF} explicitly trusted non-failing
+samorev publisher check run(s) from the independent-CI gate.`
+
 Where STATUS_EMOJI is:
 - ✅ for success
-- ❌ for failed
+- ❌ for failure/failed
+- ❌ for self-only
+- ❌ for fetch-error/unknown
+- ❌ for none
 - ⏳ for running/pending
-- ⚠️ for canceled/unknown
+- ⚠️ for canceled
+
+**If CI is self-only, add to BLOCKING ISSUES:**
+
+```markdown
+**HIGH** `CI/Pipeline` - Pipeline status is self-only
+> Only explicitly trusted non-failing samorev publisher checks remained; no independent CI was evaluated.
+> **Fix:** Run at least one independent CI check successfully before reviewing.
+```
+
+**If CI is none, add to BLOCKING ISSUES:**
+
+```markdown
+**HIGH** `CI/Pipeline` - Pipeline status is none
+> No independent CI check was reported for this pull request.
+> **Fix:** Run at least one independent CI check successfully before reviewing.
+```
+
+**If CI is pending, add to BLOCKING ISSUES:**
+
+```markdown
+**HIGH** `CI/Pipeline` - Pipeline status is pending
+> Independent CI has not completed yet.
+> **Fix:** Wait for CI to finish successfully, then rerun the review.
+```
+
+**If GitLab CI is running, created, preparing, scheduled, or waiting_for_resource, add to BLOCKING ISSUES:**
+
+```markdown
+**HIGH** `CI/Pipeline` - Pipeline status is {PIPELINE_STATUS}
+> GitLab CI is still in progress.
+> **Fix:** Wait for CI to finish successfully, then rerun the review.
+```
+
+**For any other non-success CI status, add to BLOCKING ISSUES:**
+
+```markdown
+**CRITICAL** `CI/Pipeline` - Pipeline status is {PIPELINE_STATUS}
+> CI returned a non-success status that is not otherwise categorized.
+> **Fix:** Produce a successful completed pipeline, then rerun the review.
+```
+
+**If CI is unknown or fetch-error, add to BLOCKING ISSUES:**
+
+```markdown
+**CRITICAL** `CI/Pipeline` - Pipeline status is {PIPELINE_STATUS}
+> Provider CI could not be fetched or returned an unusable payload.
+> **Fix:** Restore CI access, verify the provider response, and rerun the review.
+```
 
 **If CI failed, add to BLOCKING ISSUES:**
 
@@ -372,13 +464,27 @@ compliance_mode: iso27001
 Use `lib/compliance.py` as the source of truth:
 
 ```bash
+SAMOREV_ROOT=""
+for candidate in \
+  "${REV_ROOT:-}" \
+  "${SAMOREV_INSTALL_ROOT:-}" \
+  "$HOME/.claude/samorev"; do
+  if [ -f "$candidate/lib/compliance.py" ]; then
+    SAMOREV_ROOT=$(cd "$candidate" && pwd)
+    break
+  fi
+done
+export SAMOREV_ROOT
 COMPLIANCE_REPORT=$(python3 - <<'PY'
 import json
 import os
 import sys
 
 repo_root = os.environ.get("REPO_ROOT", ".")
-sys.path.insert(0, os.path.join(repo_root, "lib"))
+samorev_root = os.environ.get("SAMOREV_ROOT", "")
+if not samorev_root:
+    raise SystemExit("Error: SAMOREV_ROOT is missing; reinstall /review-mr from a complete samorev checkout")
+sys.path.insert(0, os.path.join(samorev_root, "lib"))
 
 from compliance import render_compliance_report
 
@@ -691,6 +797,17 @@ The helper outputs a block like:
 Use it to build `PRIOR_CONTEXT`:
 
 ```bash
+SAMOREV_ROOT=""
+for candidate in \
+  "${REV_ROOT:-}" \
+  "${SAMOREV_INSTALL_ROOT:-}" \
+  "$HOME/.claude/samorev"; do
+  if [ -f "$candidate/lib/review_memory.py" ]; then
+    SAMOREV_ROOT=$(cd "$candidate" && pwd)
+    break
+  fi
+done
+export SAMOREV_ROOT
 if [ "$REVIEW_PROVIDER" = "github" ]; then
   PRIOR_CONTEXT=$(eval "$COMMENTS_COMMAND" 2>/dev/null | jq -r '
     def interesting: (.body | test("samorev Code Review Report|REV Code Review Report|samorev-assisted review|REV-assisted review"));
@@ -703,8 +820,11 @@ if [ "$REVIEW_PROVIDER" = "github" ]; then
     "</recent_discussion>"
   ' || true)
 else
-  PRIOR_CONTEXT=$(python3 "$REPO_ROOT/lib/review_memory.py" \
-    "$PROJECT_URL_ENCODED" "$MR_NUMBER" 2>/dev/null || true)
+  if ! PRIOR_CONTEXT=$(python3 "$SAMOREV_ROOT/lib/review_memory.py" \
+    "$PROJECT_URL_ENCODED" "$MR_NUMBER"); then
+    echo "Warning: trusted review-memory helper failed; continuing without prior context" >&2
+    PRIOR_CONTEXT=""
+  fi
 fi
 ```
 
@@ -730,6 +850,17 @@ To load rules:
 # Optional rules can be provided at ./rules/rules
 # The path is relative to the repo root where /review-mr is invoked
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
+SAMOREV_ROOT=""
+for candidate in \
+  "${REV_ROOT:-}" \
+  "${SAMOREV_INSTALL_ROOT:-}" \
+  "$HOME/.claude/samorev"; do
+  if [ -f "$candidate/lib/review_memory.py" ]; then
+    SAMOREV_ROOT=$(cd "$candidate" && pwd)
+    break
+  fi
+done
+export SAMOREV_ROOT
 if [ "$REVIEW_PROVIDER" = "github" ]; then
   PRIOR_CONTEXT=$(eval "$COMMENTS_COMMAND" 2>/dev/null | jq -r '
     def interesting: (.body | test("samorev Code Review Report|REV Code Review Report|samorev-assisted review|REV-assisted review"));
@@ -742,8 +873,11 @@ if [ "$REVIEW_PROVIDER" = "github" ]; then
     "</recent_discussion>"
   ' || true)
 else
-  PRIOR_CONTEXT=$(python3 "$REPO_ROOT/lib/review_memory.py" \
-    "$PROJECT_URL_ENCODED" "$MR_NUMBER" 2>/dev/null || true)
+  if ! PRIOR_CONTEXT=$(python3 "$SAMOREV_ROOT/lib/review_memory.py" \
+    "$PROJECT_URL_ENCODED" "$MR_NUMBER"); then
+    echo "Warning: trusted review-memory helper failed; continuing without prior context" >&2
+    PRIOR_CONTEXT=""
+  fi
 fi
 RULES_CONTENT=""
 RULES_LOADED=false
