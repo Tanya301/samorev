@@ -28,13 +28,27 @@ export type ClaudeRunner = (prompt: string) => Promise<string>;
 
 export type ReviewOutcome = "PASS" | "FAIL";
 
+export interface Finding {
+  id: string;
+  severity: string;
+  confidence: number;
+  area: string;
+  issue: string;
+  evidence: string;
+  fix: string;
+  file?: string;
+  line?: number;
+}
+
 export type FetchReviewResult = {
   report: string;
   outcome: ReviewOutcome;
+  findings: Finding[];
 };
 
 /** Per-area finding counts parsed from LLM output. */
 type LlmFindings = {
+  findings: Finding[];
   /** High-confidence findings (confidence 8-10): appear in Findings column */
   security: number;
   bugs: number;
@@ -112,21 +126,17 @@ export async function fetchReviewSummary(
     llmUsed = true;
   } catch (_err) {
     // Fail-closed: if the LLM runner fails we must not auto-PASS.
-    llmFindings = {
-      security: 0,
-      bugs: 0,
-      tests: 0,
-      guidelines: 0,
-      docs: 0,
-      potentialSecurity: 0,
-      potentialBugs: 0,
-      potentialTests: 0,
-      potentialGuidelines: 0,
-      potentialDocs: 0,
-      allItems: ["**CRITICAL** [system] LLM reviewer unavailable — treating as FAIL (fail-closed)"],
-      blockingItems: ["LLM reviewer unavailable — treating as FAIL (fail-closed)"],
-    };
+    llmFindings = deriveLlmFindings([createFinding({
+      severity: "critical",
+      confidence: 10,
+      area: "system",
+      issue: "LLM reviewer unavailable — treating as FAIL (fail-closed)",
+      evidence: "",
+      fix: "",
+    })]);
   }
+
+  const findings = llmFindings.findings;
 
   // Outcome is FAIL when:
   // - CI/draft gate has findings (gateFindings), OR
@@ -154,7 +164,7 @@ export async function fetchReviewSummary(
     metadata: fetched.metadata,
   });
 
-  return { report, outcome };
+  return { report, outcome, findings };
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -301,6 +311,8 @@ function buildReviewPrompt(diffText: string, title: string, description: string)
     "- issue: <brief description>",
     "- evidence: <the problematic code>",
     "- fix: <remediation>",
+    "- file: <repo-relative path, optional>",
+    "- line: <line number, optional>",
     "",
     "Only report findings with confidence >= 4.",
     "If no issues found in a category, skip it.",
@@ -358,7 +370,9 @@ export { runClaude as _runClaudeForTest };
 // LLM output parsing
 // ──────────────────────────────────────────────────────────────────────────────
 
-const AREA_MAP: Record<string, keyof Omit<LlmFindings, "blockingItems" | "allItems">> = {
+type FindingCountKey = "security" | "bugs" | "tests" | "guidelines" | "docs";
+
+const AREA_MAP: Record<string, FindingCountKey> = {
   security: "security",
   bugs: "bugs",
   bug: "bugs",
@@ -373,17 +387,28 @@ const AREA_MAP: Record<string, keyof Omit<LlmFindings, "blockingItems" | "allIte
 
 const BLOCKING_SEVERITIES = new Set(["critical", "high", "medium"]);
 
-/**
- * Parse the structured FINDING: blocks emitted by the LLM into per-area counts
- * and a list of blocking issue descriptions for the report body.
- *
- * Confidence bands match the table Note in the report:
- *   - 8-10 → Findings (high-confidence, counted in `security/bugs/tests/guidelines/docs`)
- *   - 4-7  → Potential (medium-confidence, counted in `potentialSecurity/...`)
- *   - 0-3  → Filtered (excluded entirely)
- */
-export function parseLlmFindings(llmOutput: string): LlmFindings {
+function findingId(area: string, issue: string): string {
+  let hash = 2166136261;
+  for (const char of issue) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${area || "unknown"}-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function createFinding(finding: Omit<Finding, "id">): Finding {
+  return { id: findingId(finding.area, finding.issue), ...finding };
+}
+
+function renderFinding(finding: Finding): string {
+  const label = finding.severity ? finding.severity.toUpperCase() : "INFO";
+  const areaLabel = finding.area ? `[${finding.area}] ` : "";
+  return `**${label}** ${areaLabel}${finding.issue}${finding.evidence ? `\n> ${finding.evidence}` : ""}${finding.fix ? `\n> **Fix:** ${finding.fix}` : ""}`;
+}
+
+function deriveLlmFindings(findings: Finding[]): LlmFindings {
   const result: LlmFindings = {
+    findings,
     security: 0,
     bugs: 0,
     tests: 0,
@@ -398,9 +423,45 @@ export function parseLlmFindings(llmOutput: string): LlmFindings {
     blockingItems: [],
   };
 
-  if (!llmOutput || llmOutput.trim().toUpperCase().startsWith("NO_FINDINGS")) {
-    return result;
+  for (const finding of findings) {
+    const areaKey = AREA_MAP[finding.area];
+    if (areaKey) {
+      if (finding.confidence >= 8) {
+        result[areaKey] += 1;
+      } else {
+        const potentialKey = `potential${areaKey.charAt(0).toUpperCase()}${areaKey.slice(1)}` as keyof Pick<
+          LlmFindings,
+          "potentialSecurity" | "potentialBugs" | "potentialTests" | "potentialGuidelines" | "potentialDocs"
+        >;
+        result[potentialKey] += 1;
+      }
+    }
+
+    const renderedLine = renderFinding(finding);
+    result.allItems.push(renderedLine);
+    if (BLOCKING_SEVERITIES.has(finding.severity)) {
+      result.blockingItems.push(renderedLine);
+    }
   }
+
+  return result;
+}
+
+/**
+ * Parse the structured FINDING: blocks emitted by the LLM, retaining each
+ * finding and deriving the legacy counts and rendered report items from them.
+ *
+ * Confidence bands match the table Note in the report:
+ *   - 8-10 → Findings (high-confidence, counted in `security/bugs/tests/guidelines/docs`)
+ *   - 4-7  → Potential (medium-confidence, counted in `potentialSecurity/...`)
+ *   - 0-3  → Filtered (excluded entirely)
+ */
+export function parseLlmFindings(llmOutput: string): LlmFindings {
+  if (!llmOutput || llmOutput.trim().toUpperCase().startsWith("NO_FINDINGS")) {
+    return deriveLlmFindings([]);
+  }
+
+  const findings: Finding[] = [];
 
   // Split on FINDING: markers
   const blocks = llmOutput.split(/\bFINDING:\s*/i).slice(1);
@@ -413,6 +474,8 @@ export function parseLlmFindings(llmOutput: string): LlmFindings {
     let issue = "";
     let evidence = "";
     let fix = "";
+    let file: string | undefined;
+    let findingLine: number | undefined;
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -421,49 +484,37 @@ export function parseLlmFindings(llmOutput: string): LlmFindings {
       const key = kv[1].toLowerCase();
       const val = kv[2].trim();
       if (key === "severity") severity = val.toLowerCase();
-      else if (key === "confidence") confidenceVal = parseInt(val, 10) || 0;
+      else if (key === "confidence") {
+        const parsed = Number(val);
+        confidenceVal = Number.isFinite(parsed) ? parsed : 0;
+      }
       else if (key === "area") area = val.toLowerCase();
       else if (key === "issue") issue = val;
       else if (key === "evidence") evidence = val;
       else if (key === "fix") fix = val;
+      else if (key === "file" && val) file = val;
+      else if (key === "line" && val) {
+        const parsed = Number(val);
+        if (Number.isFinite(parsed)) findingLine = parsed;
+      }
     }
 
     // Confidence < 4: filtered entirely (mirrors the prompt instructions)
     if (confidenceVal < 4) continue;
 
-    // Map area to our known categories
-    const areaKey = AREA_MAP[area];
-    if (areaKey) {
-      if (confidenceVal >= 8) {
-        // High-confidence: counts as a Findings entry
-        result[areaKey] += 1;
-      } else {
-        // Medium-confidence (4-7): counts as a Potential entry
-        const potentialKey = `potential${areaKey.charAt(0).toUpperCase()}${areaKey.slice(1)}` as keyof Pick<
-          LlmFindings,
-          "potentialSecurity" | "potentialBugs" | "potentialTests" | "potentialGuidelines" | "potentialDocs"
-        >;
-        result[potentialKey] += 1;
-      }
-    }
-
-    // Build the rendered line for this finding (used in both allItems and blockingItems)
-    const label = severity ? severity.toUpperCase() : "INFO";
-    const areaLabel = area ? `[${area}] ` : "";
-    const renderedLine = `**${label}** ${areaLabel}${issue}${evidence ? `\n> ${evidence}` : ""}${fix ? `\n> **Fix:** ${fix}` : ""}`;
-
-    // allItems collects ALL findings with confidence >= 4, regardless of severity.
-    // This is what gets rendered in the report section — its length is what the
-    // section header count declares, and it equals Findings+Potential in the table.
-    result.allItems.push(renderedLine);
-
-    // blockingItems is the CRITICAL/HIGH/MEDIUM subset (kept for backward compat)
-    if (BLOCKING_SEVERITIES.has(severity)) {
-      result.blockingItems.push(renderedLine);
-    }
+    findings.push(createFinding({
+      severity,
+      confidence: confidenceVal,
+      area,
+      issue,
+      evidence,
+      fix,
+      ...(file ? { file } : {}),
+      ...(findingLine !== undefined ? { line: findingLine } : {}),
+    }));
   }
 
-  return result;
+  return deriveLlmFindings(findings);
 }
 
 async function fetchGitHub(plan: FetchPlan, runCommand: RunCommand): Promise<FetchedData> {
@@ -883,4 +934,3 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function displayCommand(command: string[]): string {
   return command.join(" ");
 }
-

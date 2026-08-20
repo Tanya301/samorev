@@ -228,4 +228,45 @@ describe("LLM review integration", () => {
     // Fail-closed: error means we cannot trust the result → FAIL
     expect(outcome).toBe("FAIL");
   });
+
+  it("exposes structured findings with numeric confidence at the review boundary", async () => {
+    const llmOutput = [
+      "FINDING:",
+      "- severity: HIGH",
+      "- confidence: 6.5",
+      "- area: Bugs",
+      "- issue: division ignores the supplied divisor",
+      "- evidence: return a / 0;",
+      "- fix: divide by b after guarding against zero",
+      "- file: math.ts",
+      "- line: 4",
+    ].join("\n");
+
+    const result = await fetchReviewSummary(
+      githubRef,
+      githubPlan,
+      ".claude/commands/review-mr.md",
+      {
+        blocking: true,
+        runCommand: makeRunCommand(),
+        noComment: true,
+        claudeRunner: async () => llmOutput,
+      },
+    );
+
+    expect(result.findings).toEqual([
+      {
+        id: expect.any(String),
+        severity: "high",
+        confidence: 6.5,
+        area: "bugs",
+        issue: "division ignores the supplied divisor",
+        evidence: "return a / 0;",
+        fix: "divide by b after guarding against zero",
+        file: "math.ts",
+        line: 4,
+      },
+    ]);
+    expect(typeof result.findings[0].confidence).toBe("number");
+  });
 });
