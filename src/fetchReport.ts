@@ -25,6 +25,7 @@ type HttpJson = (url: string) => Promise<unknown>;
  * Mock this in tests — never pass ANTHROPIC_API_KEY or @anthropic-ai/sdk.
  */
 export type ClaudeRunner = (prompt: string) => Promise<string>;
+export type DefendRunner = (prompt: string) => Promise<string>;
 
 export type ReviewOutcome = "PASS" | "FAIL";
 
@@ -76,6 +77,11 @@ type LlmFindings = {
   blockingItems: string[];
 };
 
+type DroppedFinding = {
+  finding: Finding;
+  reason: string;
+};
+
 export async function fetchReviewSummary(
   reference: ReviewReference,
   plan: FetchPlan,
@@ -92,11 +98,18 @@ export async function fetchReviewSummary(
      * Production code uses the real claude subprocess via runClaude().
      */
     claudeRunner?: ClaudeRunner;
+    /** Inject the adversarial finding defender in tests. */
+    defendRunner?: DefendRunner;
+    /** Disable defense for tests or callers that need the raw review result. */
+    noDefend?: boolean;
   } = { blocking: false },
 ): Promise<FetchReviewResult> {
   const runCommand = options.runCommand ?? runText;
   const httpJson = options.httpJson ?? fetchJson;
   const claudeRunner = options.claudeRunner ?? runClaude;
+  // Reuse an injected review runner when present so existing test seams stay
+  // hermetic; production defaults both independent calls to safe runClaude().
+  const defendRunner = options.defendRunner ?? options.claudeRunner ?? runClaude;
   const fetched = reference.provider === "github"
     ? await fetchGitHub(plan, runCommand)
     : await fetchGitLab(reference, plan, runCommand, httpJson);
@@ -136,6 +149,10 @@ export async function fetchReviewSummary(
     })]);
   }
 
+  const defense = options.noDefend
+    ? { findings: llmFindings.findings, dropped: [] }
+    : await defendFindings(llmFindings.findings, fetched.diff, title, String(fetched.metadata.description ?? fetched.metadata.body ?? ""), defendRunner);
+  llmFindings = deriveLlmFindings(defense.findings);
   const findings = llmFindings.findings;
 
   // Outcome is FAIL when:
@@ -153,6 +170,7 @@ export async function fetchReviewSummary(
     ci,
     findings: gateFindings,
     llmFindings,
+    droppedFindings: defense.dropped,
     llmUsed,
     outcome,
     promptPath,
@@ -365,6 +383,76 @@ async function runClaude(prompt: string): Promise<string> {
 
 // Exported only for testing
 export { runClaude as _runClaudeForTest };
+
+async function defendFindings(
+  findings: Finding[],
+  diff: string,
+  title: string,
+  description: string,
+  defendRunner: DefendRunner,
+): Promise<{ findings: Finding[]; dropped: DroppedFinding[] }> {
+  const decisions = await Promise.all(findings.map(async (finding) => {
+    try {
+      const response = await defendRunner(buildDefenderPrompt(finding, diff, title, description));
+      const decision = parseDefenderVerdict(response);
+      if (decision?.verdict === "DROP") {
+        return { finding, reason: decision.reason };
+      }
+    } catch (_error) {
+      // Defense is fail-safe: runner failures always uphold the finding.
+    }
+    return undefined;
+  }));
+
+  const dropped = decisions.filter((decision): decision is DroppedFinding => decision !== undefined);
+  return {
+    findings: findings.filter((_finding, index) => decisions[index] === undefined),
+    dropped,
+  };
+}
+
+function buildDefenderPrompt(finding: Finding, diff: string, title: string, description: string): string {
+  const area = finding.area ? `${finding.area.charAt(0).toUpperCase()}${finding.area.slice(1)}` : "Unknown";
+  const location = `${finding.file ?? "(not provided)"}:${finding.line ?? "(not provided)"}`;
+  return [
+    "You are the adversarial defender for a code review finding.",
+    "Argue AGAINST the finding and decide whether a real code change is genuinely warranted.",
+    "Only DROP when confident the finding is a false positive, a non-actionable nitpick, already handled, or out of scope; when in doubt, UPHOLD.",
+    "Assess the finding against the supplied diff and review context.",
+    "",
+    "<finding>",
+    `severity: ${finding.severity.toUpperCase()}`,
+    `area: ${area}`,
+    `issue: ${finding.issue}`,
+    `evidence: ${finding.evidence}`,
+    `fix: ${finding.fix}`,
+    `file:line: ${location}`,
+    "</finding>",
+    "",
+    "<review_context>",
+    `title: ${title}`,
+    `description: ${description || "(none)"}`,
+    "diff:",
+    diff || "(empty diff)",
+    "</review_context>",
+    "",
+    "Reply with exactly two lines. The first line must be exactly one of:",
+    "VERDICT: UPHOLD",
+    "VERDICT: DROP",
+    "The second line must be:",
+    "REASON: <one line>",
+  ].join("\n");
+}
+
+function parseDefenderVerdict(output: string): { verdict: "UPHOLD" | "DROP"; reason: string } | undefined {
+  const verdicts = [...output.matchAll(/^[ \t]*VERDICT:[ \t]*(UPHOLD|DROP)[ \t]*$/gim)];
+  const reasons = [...output.matchAll(/^[ \t]*REASON:[ \t]*(\S.*)[ \t]*$/gim)];
+  if (verdicts.length !== 1 || reasons.length !== 1) return undefined;
+  return {
+    verdict: verdicts[0][1].toUpperCase() as "UPHOLD" | "DROP",
+    reason: reasons[0][1].trim(),
+  };
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // LLM output parsing
@@ -765,6 +853,7 @@ function renderRevLikeReport(args: {
   ci: { status: string; summary: string };
   findings: GateFinding[];
   llmFindings: LlmFindings;
+  droppedFindings: DroppedFinding[];
   /** Whether the LLM runner was invoked successfully (vs. fail-closed path). */
   llmUsed: boolean;
   outcome: "PASS" | "FAIL";
@@ -884,8 +973,17 @@ function renderRevLikeReport(args: {
     `posted_by=${args.postedBy}`,
     `no_comment=${String(args.noComment)}`,
     `live_posting=${args.livePosting}`,
+    `defender_dropped=${args.droppedFindings.length}`,
     "```",
     "",
+    ...(args.droppedFindings.length > 0
+      ? [
+          "**Contested / dropped**",
+          "",
+          ...args.droppedFindings.map(({ finding, reason }) => `- [${finding.area}] ${finding.issue} — ${reason}`),
+          "",
+        ]
+      : []),
     "</details>",
     "",
     "---",
