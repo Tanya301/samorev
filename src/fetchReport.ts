@@ -29,6 +29,10 @@ export type DefendRunner = (prompt: string) => Promise<string>;
 
 const DEFAULT_CLAUDE_TIMEOUT_MS = 600_000;
 const DEFAULT_DEFEND_CONCURRENCY = 4;
+const DEFAULT_MAX_ROUNDS = 10;
+
+/** Stable machine marker embedded in every posted samorev review report. */
+export const SAMOREV_REVIEW_MARKER = "samorev_review=1";
 
 export type ReviewOutcome = "PASS" | "FAIL";
 
@@ -109,12 +113,15 @@ export async function fetchReviewSummary(
     defendConcurrency?: number;
     /** Wall-clock safety timeout for each Claude runner call. Defaults to 10 minutes. */
     claudeTimeoutMs?: number;
+    /** Maximum posted review rounds before escalating. Defaults to 10. */
+    maxRounds?: number;
   } = { blocking: false },
 ): Promise<FetchReviewResult> {
   const runCommand = options.runCommand ?? runText;
   const httpJson = options.httpJson ?? fetchJson;
   const claudeTimeoutMs = positiveIntegerOrDefault(options.claudeTimeoutMs, DEFAULT_CLAUDE_TIMEOUT_MS);
   const defendConcurrency = positiveIntegerOrDefault(options.defendConcurrency, DEFAULT_DEFEND_CONCURRENCY);
+  const maxRounds = positiveIntegerOrDefault(options.maxRounds, DEFAULT_MAX_ROUNDS);
   const defaultClaudeRunner = (prompt: string) => runClaude(prompt, claudeTimeoutMs);
   const claudeRunner = options.claudeRunner ?? defaultClaudeRunner;
   // Reuse an injected review runner when present so existing test seams stay
@@ -138,6 +145,38 @@ export async function fetchReviewSummary(
     comments: countJsonItems(fetched.comments),
     commits: countJsonItems(fetched.commits),
   };
+  // Round enforcement can only observe reports samorev actually posted. In
+  // --no-comment runs, this counts previously posted rounds but not the current run.
+  const priorRounds = countSamorevReviewComments(fetched.comments);
+  const currentRound = priorRounds + 1;
+
+  if (currentRound > maxRounds) {
+    const llmFindings = deriveLlmFindings([]);
+    const report = renderRevLikeReport({
+      reference,
+      title,
+      state,
+      draft,
+      diff,
+      ci,
+      findings: [],
+      llmFindings,
+      droppedFindings: [],
+      llmUsed: false,
+      outcome: "FAIL",
+      promptPath,
+      postedBy: options.postedBy ?? "local",
+      noComment: options.noComment ?? true,
+      livePosting: options.livePosting ?? "not-run",
+      blocking: options.blocking,
+      counts,
+      metadata: fetched.metadata,
+      currentRound,
+      maxRounds,
+      escalated: true,
+    });
+    return { report, outcome: "FAIL", findings: [] };
+  }
 
   // Invoke claude -p with the actual diff; fail-closed on any error.
   let llmFindings: LlmFindings;
@@ -147,14 +186,17 @@ export async function fetchReviewSummary(
     const llmOutput = await withTimeout(claudeRunner(prompt), claudeTimeoutMs, "main Claude review");
     llmFindings = parseLlmFindings(llmOutput);
     llmUsed = true;
-  } catch (_err) {
+  } catch (error) {
     // Fail-closed: if the LLM runner fails we must not auto-PASS.
+    const timedOut = error instanceof RunnerTimeoutError;
     llmFindings = deriveLlmFindings([createFinding({
       severity: "critical",
       confidence: 10,
       area: "system",
-      issue: "LLM reviewer unavailable — treating as FAIL (fail-closed)",
-      evidence: "",
+      issue: timedOut
+        ? "LLM reviewer timed out — treating as FAIL (fail-closed)"
+        : "LLM reviewer unavailable — treating as FAIL (fail-closed)",
+      evidence: timedOut ? error.message : "",
       fix: "",
     })]);
   }
@@ -198,6 +240,9 @@ export async function fetchReviewSummary(
     blocking: options.blocking,
     counts,
     metadata: fetched.metadata,
+    currentRound,
+    maxRounds,
+    escalated: false,
   });
 
   return { report, outcome, findings };
@@ -825,6 +870,26 @@ function countJsonItems(value: unknown): number {
   return 0;
 }
 
+function countSamorevReviewComments(comments: unknown): number {
+  let items: unknown[] = [];
+  if (Array.isArray(comments)) {
+    items = comments;
+  } else if (isRecord(comments)) {
+    for (const key of ["comments", "notes", "nodes", "values"]) {
+      if (Array.isArray(comments[key])) {
+        items = comments[key];
+        break;
+      }
+    }
+  }
+
+  return items.filter((comment) => (
+    isRecord(comment)
+    && typeof comment.body === "string"
+    && comment.body.includes(SAMOREV_REVIEW_MARKER)
+  )).length;
+}
+
 function summarizeCi(provider: Provider, ci: unknown): { status: string; summary: string } {
   return provider === "github" ? summarizeGitHubCi(ci) : summarizeGitLabCi(ci);
 }
@@ -944,6 +1009,9 @@ function renderRevLikeReport(args: {
   blocking: boolean;
   counts: { comments: number; commits: number };
   metadata: Record<string, unknown>;
+  currentRound: number;
+  maxRounds: number;
+  escalated: boolean;
 }): string {
   const targetKind = args.reference.provider === "gitlab" ? "MR" : "PR";
   const targetRef = args.reference.provider === "gitlab"
@@ -981,7 +1049,18 @@ function renderRevLikeReport(args: {
     "",
   ];
 
-  if (totalDisplayedCount > 0) {
+  if (args.escalated) {
+    lines.push(
+      "### ESCALATED",
+      "",
+      `Reached the ${args.maxRounds}-round review limit without converging — escalating to a human. Automated re-review stopped.`,
+      "",
+      "**Result: FAILED**",
+      "",
+      "---",
+      "",
+    );
+  } else if (totalDisplayedCount > 0) {
     lines.push(`### ${issuesSectionLabel} (${totalDisplayedCount})`, "");
     // Gate findings (CI/draft) — rendered first
     for (const finding of args.findings) {
@@ -1050,6 +1129,9 @@ function renderRevLikeReport(args: {
     `ci_summary=${args.ci.summary}`,
     `prompt=${args.promptPath}`,
     `blocking=${String(args.blocking)}`,
+    SAMOREV_REVIEW_MARKER,
+    `review_round=${args.currentRound}/${args.maxRounds}`,
+    `escalated=${String(args.escalated)}`,
     `posted_by=${args.postedBy}`,
     `no_comment=${String(args.noComment)}`,
     `live_posting=${args.livePosting}`,
