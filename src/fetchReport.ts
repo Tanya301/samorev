@@ -27,6 +27,9 @@ type HttpJson = (url: string) => Promise<unknown>;
 export type ClaudeRunner = (prompt: string) => Promise<string>;
 export type DefendRunner = (prompt: string) => Promise<string>;
 
+const DEFAULT_CLAUDE_TIMEOUT_MS = 600_000;
+const DEFAULT_DEFEND_CONCURRENCY = 4;
+
 export type ReviewOutcome = "PASS" | "FAIL";
 
 export interface Finding {
@@ -102,14 +105,21 @@ export async function fetchReviewSummary(
     defendRunner?: DefendRunner;
     /** Disable defense for tests or callers that need the raw review result. */
     noDefend?: boolean;
+    /** Maximum defender calls in flight at once. Defaults to 4. */
+    defendConcurrency?: number;
+    /** Wall-clock safety timeout for each Claude runner call. Defaults to 10 minutes. */
+    claudeTimeoutMs?: number;
   } = { blocking: false },
 ): Promise<FetchReviewResult> {
   const runCommand = options.runCommand ?? runText;
   const httpJson = options.httpJson ?? fetchJson;
-  const claudeRunner = options.claudeRunner ?? runClaude;
+  const claudeTimeoutMs = positiveIntegerOrDefault(options.claudeTimeoutMs, DEFAULT_CLAUDE_TIMEOUT_MS);
+  const defendConcurrency = positiveIntegerOrDefault(options.defendConcurrency, DEFAULT_DEFEND_CONCURRENCY);
+  const defaultClaudeRunner = (prompt: string) => runClaude(prompt, claudeTimeoutMs);
+  const claudeRunner = options.claudeRunner ?? defaultClaudeRunner;
   // Reuse an injected review runner when present so existing test seams stay
   // hermetic; production defaults both independent calls to safe runClaude().
-  const defendRunner = options.defendRunner ?? options.claudeRunner ?? runClaude;
+  const defendRunner = options.defendRunner ?? options.claudeRunner ?? defaultClaudeRunner;
   const fetched = reference.provider === "github"
     ? await fetchGitHub(plan, runCommand)
     : await fetchGitLab(reference, plan, runCommand, httpJson);
@@ -134,7 +144,7 @@ export async function fetchReviewSummary(
   let llmUsed = false;
   try {
     const prompt = buildReviewPrompt(fetched.diff, title, String(fetched.metadata.description ?? fetched.metadata.body ?? ""));
-    const llmOutput = await claudeRunner(prompt);
+    const llmOutput = await withTimeout(claudeRunner(prompt), claudeTimeoutMs, "main Claude review");
     llmFindings = parseLlmFindings(llmOutput);
     llmUsed = true;
   } catch (_err) {
@@ -151,7 +161,15 @@ export async function fetchReviewSummary(
 
   const defense = options.noDefend
     ? { findings: llmFindings.findings, dropped: [] }
-    : await defendFindings(llmFindings.findings, fetched.diff, title, String(fetched.metadata.description ?? fetched.metadata.body ?? ""), defendRunner);
+    : await defendFindings(
+        llmFindings.findings,
+        fetched.diff,
+        title,
+        String(fetched.metadata.description ?? fetched.metadata.body ?? ""),
+        defendRunner,
+        defendConcurrency,
+        claudeTimeoutMs,
+      );
   llmFindings = deriveLlmFindings(defense.findings);
   const findings = llmFindings.findings;
 
@@ -357,7 +375,7 @@ export { buildReviewPrompt as buildReviewPromptForTest };
  * would otherwise swallow a trailing positional prompt on claude >= 2.1.
  * The model can still read the prompt and emit text output.
  */
-async function runClaude(prompt: string): Promise<string> {
+async function runClaude(prompt: string, timeoutMs = DEFAULT_CLAUDE_TIMEOUT_MS): Promise<string> {
   const proc = Bun.spawn({
     cmd: ["claude", "-p", "--allowedTools", ""],
     stdin: new TextEncoder().encode(prompt),
@@ -369,11 +387,26 @@ async function runClaude(prompt: string): Promise<string> {
       USER: process.env.USER ?? "root",
     },
   });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
+  let stdout: string;
+  let stderr: string;
+  let exitCode: number;
+  try {
+    [stdout, stderr, exitCode] = await withTimeout(
+      Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]),
+      timeoutMs,
+      "claude -p subprocess",
+    );
+  } catch (error) {
+    if (error instanceof RunnerTimeoutError) {
+      proc.kill("SIGKILL");
+      await proc.exited;
+    }
+    throw error;
+  }
   if (exitCode !== 0) {
     const detail = stderr.trim() ? `: ${stderr.trim()}` : "";
     throw new FetchError(`claude -p exited with code ${exitCode}${detail}`);
@@ -390,25 +423,48 @@ async function defendFindings(
   title: string,
   description: string,
   defendRunner: DefendRunner,
+  concurrency: number,
+  timeoutMs: number,
 ): Promise<{ findings: Finding[]; dropped: DroppedFinding[] }> {
-  const decisions = await Promise.all(findings.map(async (finding) => {
-    try {
-      const response = await defendRunner(buildDefenderPrompt(finding, diff, title, description));
-      const decision = parseDefenderVerdict(response);
-      if (decision?.verdict === "DROP") {
-        return { finding, reason: decision.reason };
+  const decisions: Array<DroppedFinding | undefined> = new Array(findings.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (nextIndex < findings.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const finding = findings[index];
+      try {
+        const response = await withTimeout(
+          defendRunner(buildDefenderPrompt(finding, diff, title, description)),
+          timeoutMs,
+          "Claude defender",
+        );
+        const decision = parseDefenderVerdict(response);
+        if (decision?.verdict === "DROP" && !isProtectedFinding(finding)) {
+          decisions[index] = { finding, reason: decision.reason };
+        }
+      } catch (error) {
+        // Defense is fail-safe: runner failures and timeouts always uphold the finding.
+        // An injected timed-out runner cannot be forcibly cancelled, so retire
+        // this worker rather than allowing abandoned calls to exceed the cap.
+        if (error instanceof RunnerTimeoutError) return;
       }
-    } catch (_error) {
-      // Defense is fail-safe: runner failures always uphold the finding.
     }
-    return undefined;
-  }));
+  }
+
+  const workerCount = Math.min(concurrency, findings.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
   const dropped = decisions.filter((decision): decision is DroppedFinding => decision !== undefined);
   return {
     findings: findings.filter((_finding, index) => decisions[index] === undefined),
     dropped,
   };
+}
+
+function isProtectedFinding(finding: Finding): boolean {
+  return finding.severity.trim().toLowerCase() === "critical" || finding.area.trim().toLowerCase() === "security";
 }
 
 function buildDefenderPrompt(finding: Finding, diff: string, title: string, description: string): string {
@@ -418,6 +474,7 @@ function buildDefenderPrompt(finding: Finding, diff: string, title: string, desc
     "You are the adversarial defender for a code review finding.",
     "Argue AGAINST the finding and decide whether a real code change is genuinely warranted.",
     "Only DROP when confident the finding is a false positive, a non-actionable nitpick, already handled, or out of scope; when in doubt, UPHOLD.",
+    "Never recommend DROP for a CRITICAL-severity finding or a security finding; those must always be UPHELD.",
     "Assess the finding against the supplied diff and review context.",
     "",
     "<finding>",
@@ -452,6 +509,29 @@ function parseDefenderVerdict(output: string): { verdict: "UPHOLD" | "DROP"; rea
     verdict: verdicts[0][1].toUpperCase() as "UPHOLD" | "DROP",
     reason: reasons[0][1].trim(),
   };
+}
+
+class RunnerTimeoutError extends FetchError {}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, operation: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new RunnerTimeoutError(`${operation} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
+function positiveIntegerOrDefault(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  const integer = Math.floor(value);
+  return integer > 0 ? integer : fallback;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
