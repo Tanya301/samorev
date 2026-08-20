@@ -38,6 +38,20 @@ const blockingFinding = [
   "- line: 1",
 ].join("\n");
 
+function finding(overrides: { severity?: string; area?: string; issue?: string } = {}) {
+  return [
+    "FINDING:",
+    `- severity: ${overrides.severity ?? "HIGH"}`,
+    "- confidence: 9",
+    `- area: ${overrides.area ?? "Bugs"}`,
+    `- issue: ${overrides.issue ?? "answer changed unexpectedly"}`,
+    "- evidence: export const answer = 42",
+    "- fix: restore the previous answer",
+    "- file: math.ts",
+    "- line: 1",
+  ].join("\n");
+}
+
 function review(options: Record<string, unknown> = {}) {
   return fetchReviewSummary(reference, plan, ".claude/commands/review-mr.md", {
     blocking: true,
@@ -119,5 +133,72 @@ describe("adversarial finding defender", () => {
     expect(afterDefense.outcome).toBe("PASS");
     expect(afterDefense.findings).toEqual([]);
     expect(afterDefense.report).toContain("**Result: PASSED**");
+  });
+
+  it("keeps a CRITICAL-severity finding when the defender recommends DROP", async () => {
+    const prompts: string[] = [];
+    const result = await review({
+      claudeRunner: async () => finding({ severity: "cRiTiCaL" }),
+      defendRunner: async (prompt: string) => {
+        prompts.push(prompt);
+        return "VERDICT: DROP\nREASON: This looks harmless.";
+      },
+    });
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].severity).toBe("critical");
+    expect(result.outcome).toBe("FAIL");
+    expect(result.report).toContain("defender_dropped=0");
+    expect(prompts[0]).toContain(
+      "Never recommend DROP for a CRITICAL-severity finding or a security finding; those must always be UPHELD.",
+    );
+  });
+
+  it("keeps a security-area finding when the defender recommends DROP", async () => {
+    const result = await review({
+      claudeRunner: async () => finding({ area: "sEcUrItY" }),
+      defendRunner: async () => "VERDICT: DROP\nREASON: This looks harmless.",
+    });
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].area).toBe("security");
+    expect(result.outcome).toBe("FAIL");
+    expect(result.report).toContain("defender_dropped=0");
+  });
+
+  it("limits concurrent defender calls and preserves finding order", async () => {
+    const issues = Array.from({ length: 7 }, (_value, index) => `issue ${index + 1}`);
+    let invocations = 0;
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const result = await review({
+      claudeRunner: async () => issues.map((issue) => finding({ issue })).join("\n"),
+      defendConcurrency: 2,
+      defendRunner: async () => {
+        invocations += 1;
+        inFlight += 1;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        await Bun.sleep(5);
+        inFlight -= 1;
+        return "VERDICT: UPHOLD\nREASON: The finding remains actionable.";
+      },
+    });
+
+    expect(peakInFlight).toBeLessThanOrEqual(2);
+    expect(peakInFlight).toBe(2);
+    expect(invocations).toBe(issues.length);
+    expect(result.findings.map(({ issue }) => issue)).toEqual(issues);
+  });
+
+  it("keeps a finding when an injected defender runner times out", async () => {
+    const result = await review({
+      claudeTimeoutMs: 10,
+      defendRunner: async () => new Promise<string>(() => {}),
+    });
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].issue).toBe("answer changed unexpectedly");
+    expect(result.outcome).toBe("FAIL");
+    expect(result.report).toContain("defender_dropped=0");
   });
 });
