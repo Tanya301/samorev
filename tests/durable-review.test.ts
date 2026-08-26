@@ -16,7 +16,9 @@ import { tmpdir } from "node:os";
 import { Absurd } from "absurd-sdk";
 import { createDurableApp, spawnDurableReview, QUEUE_NAME } from "../src/durableReview";
 
-const DSN = "postgresql://testuser@/samorev_durable_poc?host=/var/run/postgresql";
+const DSN =
+  process.env.SAMOREV_TEST_DSN ??
+  "postgresql://testuser@/samorev_durable_poc?host=/var/run/postgresql";
 
 const COUNTER_FILE = join(tmpdir(), "samorev-llm-call-count.txt");
 
