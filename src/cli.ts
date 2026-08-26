@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { fetchReviewSummary, FetchError } from "./fetchReport";
 import { assertProviderAuth, postProviderSummary, PostingError, postingTool } from "./providerPosting";
 import { parseReviewReference, planFetch, ReviewReferenceError } from "./providerPlanning";
+import { runDurableReview } from "./durableReview";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const promptPath = join(repoRoot, ".claude", "commands", "review-mr.md");
@@ -63,6 +64,23 @@ async function review(args: ReviewArgs): Promise<number> {
     console.log(formatSmoke(reference, plan, args.noComment, args.blocking));
     return 0;
   }
+
+  // ── Durable path (SAMOREV_DURABLE=1) ────────────────────────────────────────
+  // Safety: default (unset) falls through to the existing path BYTE-FOR-BYTE.
+  if (process.env.SAMOREV_DURABLE === "1") {
+    const dsn =
+      process.env.SAMOREV_DURABLE_DSN ??
+      `postgresql://${process.env.USER ?? "testuser"}@/samorev_durable_poc?host=/var/run/postgresql`;
+    const result = await runDurableReview(dsn, {
+      url: args.reference!,
+      promptPath: relative(repoRoot, promptPath),
+      noComment: args.noComment,
+      blocking: args.blocking,
+    });
+    console.log(result.report);
+    return args.blocking && result.outcome === "FAIL" ? 1 : 0;
+  }
+  // ── End durable path ────────────────────────────────────────────────────────
 
   if (args.fetch) {
     try {
